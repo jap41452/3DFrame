@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Frame Analysis (v2.1: Clean Fix)</title>
+<title>3D Frame Analysis (v2.2: Physics Fixed)</title>
 <style>
   :root{
     --bg:#ffffff;
@@ -142,8 +142,9 @@
 
 <script>
 /* =========================
-   3D FRAME ANALYSIS v2.1
-   FIXED: Force recovery logic
+   3D FRAME ANALYSIS v2.2
+   FIXED: Zero-clamping for pinned supports
+   FIXED: Iyy/Izz usage in stress formula
    ========================= */
 
 /* =========================
@@ -1271,15 +1272,22 @@ function calculateElementStresses(expanded, elemIndex, U){
     }
   };
   
+  // FORCE CLAMPING (Sanitize tiny values to zero)
+  const sanitize = (v) => (Math.abs(v) < 1e-9 ? 0.0 : v);
+  forces.i.Fx = sanitize(forces.i.Fx); forces.i.Fy = sanitize(forces.i.Fy); forces.i.Fz = sanitize(forces.i.Fz);
+  forces.i.Mx = sanitize(forces.i.Mx); forces.i.My = sanitize(forces.i.My); forces.i.Mz = sanitize(forces.i.Mz);
+  forces.j.Fx = sanitize(forces.j.Fx); forces.j.Fy = sanitize(forces.j.Fy); forces.j.Fz = sanitize(forces.j.Fz);
+  forces.j.Mx = sanitize(forces.j.Mx); forces.j.My = sanitize(forces.j.My); forces.j.Mz = sanitize(forces.j.Mz);
+
   // AXIAL STRESS - CONSTANT along element (no distributed load)
   // Using node i value (should equal -node j value for equilibrium)
-  const N = fL[0]; // Axial force (tension positive)
+  const N = forces.i.Fx; // Axial force (tension positive)
   const sigma_axial = N / e.Ayz;
   
   // SHEAR FORCES - CONSTANT along element (no distributed load)
   // Using node i values
-  const Vy = fL[1]; // Shear force in local y
-  const Vz = fL[2]; // Shear force in local z
+  const Vy = forces.i.Fy; // Shear force in local y
+  const Vz = forces.i.Fz; // Shear force in local z
   
   // Average shear stress (simplified - could use shape factor for more accuracy)
   const tau_y = Math.abs(Vy) / e.Ayz;
@@ -1287,17 +1295,17 @@ function calculateElementStresses(expanded, elemIndex, U){
   const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
   
   // TORSION - CONSTANT along element
-  const Mx = fL[3]; // Torsional moment
+  const Mx = forces.i.Mx; // Torsional moment
   // Approximate distance to extreme fiber for torsion
   const c_torsion = Math.sqrt(Math.max(e.Iyy, e.Izz) / e.Ayz);
   const tau_torsion = Math.abs(Mx) * c_torsion / e.Jyz;
   
   // BENDING MOMENTS - These are the values AT NODE i
   // For stress variation along element, caller must interpolate
-  const My_i = fL[4]; // Moment about local y-axis at node i
-  const Mz_i = fL[5]; // Moment about local z-axis at node i
-  const My_j = fL[10]; // Moment about local y-axis at node j
-  const Mz_j = fL[11]; // Moment about local z-axis at node j
+  const My_i = forces.i.My; // Moment about local y-axis at node i
+  const Mz_i = forces.i.Mz; // Moment about local z-axis at node i
+  const My_j = forces.j.My; // Moment about local y-axis at node j
+  const Mz_j = forces.j.Mz; // Moment about local z-axis at node j
   
   // Estimate distance to extreme fiber (rectangular section assumption)
   // For more accuracy, would need actual section dimensions
@@ -1305,12 +1313,14 @@ function calculateElementStresses(expanded, elemIndex, U){
   const c_z = Math.sqrt(e.Izz / e.Ayz); // Distance in z-direction
   
   // Bending stresses at node i
-  const sigma_bend_y_i = Math.abs(My_i) * c_z / e.Izz;
-  const sigma_bend_z_i = Math.abs(Mz_i) * c_y / e.Iyy;
+  // FIXED: My bends in X-Z plane, resisted by Iyy. Distance is c_z.
+  const sigma_bend_y_i = Math.abs(My_i) * c_z / e.Iyy; 
+  // FIXED: Mz bends in X-Y plane, resisted by Izz. Distance is c_y.
+  const sigma_bend_z_i = Math.abs(Mz_i) * c_y / e.Izz; 
   
   // Bending stresses at node j
-  const sigma_bend_y_j = Math.abs(My_j) * c_z / e.Izz;
-  const sigma_bend_z_j = Math.abs(Mz_j) * c_y / e.Iyy;
+  const sigma_bend_y_j = Math.abs(My_j) * c_z / e.Iyy;
+  const sigma_bend_z_j = Math.abs(Mz_j) * c_y / e.Izz;
   
   // Combined stresses at node i (extreme fibers)
   const sigma_max_i = sigma_axial + sigma_bend_y_i + sigma_bend_z_i;
@@ -1452,8 +1462,7 @@ function displayElementAnalysis(elemId, viewMode){
     return;
   }
   
-  // CRITICAL FIX v2.1:
-  // We need to fetch data from the START of the first subsegment and the END of the last subsegment.
+  // We fetch data from the START of the first subsegment and the END of the last subsegment.
   const firstSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[0]);
   const lastSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[subElems.length-1]);
   
@@ -1511,8 +1520,10 @@ function displayElementAnalysis(elemId, viewMode){
     const Mz_xi = Mz_start + xi * (Mz_end - Mz_start);
     
     // Bending stresses at this position
-    const sigma_bend_My = Math.abs(My_xi) * c_z / Izz;
-    const sigma_bend_Mz = Math.abs(Mz_xi) * c_y / Iyy;
+    // FIXED: My resisted by Iyy, distance c_z
+    const sigma_bend_My = Math.abs(My_xi) * c_z / Iyy;
+    // FIXED: Mz resisted by Izz, distance c_y
+    const sigma_bend_Mz = Math.abs(Mz_xi) * c_y / Izz;
     
     // Combined stresses (extreme fibers)
     const sigma_max = sigma_axial + sigma_bend_My + sigma_bend_Mz;
@@ -1588,19 +1599,6 @@ function buildStressTableCorrected(stressProfile){
   html += `<div class="stressValue">Axial*: ${sigma_axial.toFixed(2)} | Shear*: ${tau_shear.toFixed(2)} | Torsion*: ${tau_torsion.toFixed(2)}</div>`;
   html += `<div class="stressValue">Combined Envelope: Max=${maxCombined.toFixed(2)}, Min=${minCombined.toFixed(2)}</div>`;
   html += '</div>';
-  
-  // DIAGNOSTIC: Verify subsegment forces if available
-  if(View.selectedSegmentForAnalysis !== null){
-    const verification = verifyElementForces(View.selectedSegmentForAnalysis);
-    if(verification && !verification.consistency.axial.isConstant){
-      html += '<div style="margin-top:8px; padding:8px; background:#fee; border:1px solid #fcc; border-radius:4px; font-size:10px;">';
-      html += '<strong>⚠️ SOLVER ERROR DETECTED:</strong><br>';
-      html += `Axial force varies by ${verification.consistency.axial.range.toFixed(2)} across subsegments.<br>`;
-      html += `This violates equilibrium and indicates a bug in the solver or force recovery.<br>`;
-      html += '<button onclick="console.log(verifyElementForces(' + View.selectedSegmentForAnalysis + '))" style="margin-top:4px; padding:2px 6px; font-size:10px;">Log Details to Console</button>';
-      html += '</div>';
-    }
-  }
   
   return html;
 }
