@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Frame Import + Paste (v7: Robust Segment Updates – Solve Always Uses Current Text)</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --panel:#f5f6f8;
+    --panel2:#ffffff;
+    --line:#d7dbe3;
+    --text:#111827;
+    --muted:#5b6472;
+    --accent:#2563eb;
+    --warn:#b45309;
+    --err:#b91c1c;
+    --ok:#166534;
+  }
+  html,body{height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--text);}
+  #app{height:100%; display:flex; align-items:flex-start; gap:10px; padding:10px; box-sizing:border-box;}
+  #ui{width:250px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box;}
+  #viewportWrap{width:300px; height:300px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; box-sizing:border-box; display:flex; flex-direction:column; gap:6px;}
+  #canvas{width:100%; height:100%; background:#ffffff; border:1px solid var(--line); border-radius:8px; display:block;}
+  h3{margin:0 0 8px 0; font-size:14px; font-weight:700;}
+  .sectionTitle{font-size:12px; font-weight:700; margin:10px 0 6px; color:#1f2937;}
+  button{width:100%; padding:8px 10px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text); font-weight:700; cursor:pointer;}
+  button:hover{border-color:#b9c3d6;}
+  button:disabled{opacity:0.55; cursor:not-allowed;}
+  .hint{font-size:12px; color:var(--muted); line-height:1.25; margin:8px 0;}
+  .small{font-size:12px; color:var(--muted);}
+  .badge{display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #cfd6e2; background:#ffffff; font-size:12px; color:var(--muted);}
+  #summary{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
+  #log{margin-top:10px; padding:8px; background:#ffffff; border:1px solid var(--line); border-radius:8px; height:190px; overflow:auto; font-size:12px; line-height:1.25; white-space:pre-wrap;}
+  .log-warn{color:var(--warn);} .log-err{color:var(--err);} .log-ok{color:var(--ok);}
+  #vpBar{display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:0 2px;}
+  #selInfo{font-size:12px; color:var(--muted); min-height:16px;}
+  textarea{width:100%; box-sizing:border-box; min-height:72px; max-height:140px; resize:vertical; padding:8px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text);
+           font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; line-height:1.2;}
+  .btnRow{display:flex; gap:8px;} .btnRow button{width:50%;}
+  .mini{padding:7px 8px; font-size:12px;}
+  .sep{height:10px;}
+  .sliderWrap{margin-top:8px;}
+  input[type="range"]{width:100%;}
+  .kv{display:flex; justify-content:space-between; gap:10px; font-size:12px; color:var(--muted);}
+</style>
+</head>
+
+<body>
+<div id="app">
+  <div id="ui">
+    <h3>Frame Definition</h3>
+
+    <div class="sectionTitle">Nodes</div>
+    <button id="btnImportNodes">Load Nodes File</button>
+    <input id="fileNodes" type="file" accept=".txt,.tsv,.csv" style="display:none" />
+    <div class="hint small">Paste from Excel (tab-delimited) or CSV. Header row optional.</div>
+    <textarea id="taNodes" placeholder="Paste node table: node  x  y  dX  dY  theta  Fx  Fy  M"></textarea>
+    <div class="btnRow">
+      <button id="btnParseNodes" class="mini">Use Nodes</button>
+      <button id="btnResetNodes" class="mini">Reset</button>
+    </div>
+
+    <div class="sectionTitle">Segments</div>
+    <button id="btnImportElems">Load Segments File</button>
+    <input id="fileElems" type="file" accept=".txt,.tsv,.csv" style="display:none" />
+    <div class="hint small">ni  nj  E  I  A  S  SF  MatType (1=Ductile, 2=Brittle)</div>
+    <textarea id="taElems" placeholder="Paste segment table: ni  nj  E  I  A  S  SF  MatType(1/2)"></textarea>
+    <div class="btnRow">
+      <button id="btnParseElems" class="mini">Use Segments</button>
+      <button id="btnResetElems" class="mini">Reset</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <button id="btnDraw" disabled>Draw / Edit Frame</button>
+    <div class="sep"></div>
+    <button id="btnSolve" disabled>Static Solve (10 subsegments/segment)</button>
+
+    <div class="sliderWrap">
+      <div class="kv">
+        <div>Deflection scale</div>
+        <div id="defScaleLabel">0</div>
+      </div>
+      <input id="defScale" type="range" min="0" max="200" step="1" value="0" disabled />
+      <div class="hint small">After solve, increase scale to view the overlaid deflected shape.</div>
+    </div>
+
+    <div class="hint">Viewport: Wheel = zoom, Drag = pan.</div>
+    <div id="summary"></div>
+    <div id="log"></div>
+  </div>
+
+  <div id="viewportWrap">
+    <div id="vpBar">
+      <div>Viewport</div>
+      <div id="status" class="small">Idle</div>
+    </div>
+    <canvas id="canvas" width="284" height="260"></canvas>
+    <div id="selInfo"></div>
+  </div>
+</div>
+
+<script>
+/* =========================
+   Defaults
+   ========================= */
+const DEFAULT_NODES_TEXT =
+`1\t0\t0\t0\t0
+2\t0\t96\t\t\t\t1000
+3\t96\t96
+4\t96\t0\t0\t0`;
+
+const DEFAULT_ELEMS_TEXT =
+`1\t2\t12000000\t10.7\t8\t5.35\t1\t2
+2\t3\t12000000\t10.7\t8\t5.35\t1\t2
+3\t4\t12000000\t10.7\t8\t5.35\t1\t2
+2\t4\t12000000\t10.7\t8\t5.35\t1\t2`;
+
+/* =========================
+   Model
+   ========================= */
+const Model = {
+  nodes: [],
+  elems: [],
+  nodeById: new Map(),
+  elemById: new Map(),
+  lastSolution: null,
+  isDrawn: false
+};
+
+const View = {
+  cam: { scale: 1, panX: 0, panY: 0 },
+  isInteractive: false,
+  dragging: false,
+  dragStart: {x:0,y:0, panX:0, panY:0}
+};
+
+/* =========================
+   DOM
+   ========================= */
+const el = {
+  btnImportNodes: document.getElementById('btnImportNodes'),
+  btnImportElems: document.getElementById('btnImportElems'),
+  btnDraw: document.getElementById('btnDraw'),
+  btnSolve: document.getElementById('btnSolve'),
+  fileNodes: document.getElementById('fileNodes'),
+  fileElems: document.getElementById('fileElems'),
+  taNodes: document.getElementById('taNodes'),
+  taElems: document.getElementById('taElems'),
+  btnParseNodes: document.getElementById('btnParseNodes'),
+  btnParseElems: document.getElementById('btnParseElems'),
+  btnResetNodes: document.getElementById('btnResetNodes'),
+  btnResetElems: document.getElementById('btnResetElems'),
+  log: document.getElementById('log'),
+  summary: document.getElementById('summary'),
+  canvas: document.getElementById('canvas'),
+  status: document.getElementById('status'),
+  selInfo: document.getElementById('selInfo'),
+  defScale: document.getElementById('defScale'),
+  defScaleLabel: document.getElementById('defScaleLabel')
+};
+const ctx = el.canvas.getContext('2d');
+
+/* =========================
+   Logging
+   ========================= */
+function logClear(){ el.log.textContent = ""; }
+function logLine(msg, cls=null){
+  const d = document.createElement('div');
+  d.textContent = msg;
+  if(cls) d.className = cls;
+  el.log.appendChild(d);
+  el.log.scrollTop = el.log.scrollHeight;
+}
+function setStatus(msg){ el.status.textContent = msg; }
+function badge(text){
+  const b = document.createElement('span');
+  b.className = 'badge';
+  b.textContent = text;
+  return b;
+}
+function renderSummary(){
+  const n = Model.nodes.length;
+  const m = Model.elems.length;
+  const prescribed = Model.nodes.reduce((acc,nd)=>acc +
+    (nd.ux.prescribed?1:0)+(nd.uy.prescribed?1:0)+(nd.rz.prescribed?1:0), 0);
+  const loads = Model.nodes.reduce((acc,nd)=>acc + ((nd.loads.fx||0)!==0?1:0)+((nd.loads.fy||0)!==0?1:0)+((nd.loads.mz||0)!==0?1:0), 0);
+
+  el.summary.innerHTML = "";
+  el.summary.appendChild(badge(`Nodes: ${n}`));
+  el.summary.appendChild(badge(`Segments: ${m}`));
+  el.summary.appendChild(badge(`Prescribed DOF: ${prescribed}`));
+  el.summary.appendChild(badge(`Load terms: ${loads}`));
+
+  if(Model.lastSolution){
+    const exN = Model.lastSolution.expanded.nodes.length;
+    const exE = Model.lastSolution.expanded.elems.length;
+    el.summary.appendChild(badge(`Expanded: ${exN} nodes, ${exE} segs`));
+  }
+}
+
+/* =========================
+   Parsing utilities
+   ========================= */
+function isBlankToken(t){
+  if(t==null) return true;
+  const s = String(t).trim();
+  return s === "" || s === "." || /^na$/i.test(s);
+}
+function toNumberOrNull(t){
+  if(isBlankToken(t)) return null;
+  const v = Number(String(t).trim());
+  return Number.isFinite(v) ? v : NaN;
+}
+function toNumberOrZero(t){
+  if(isBlankToken(t)) return 0;
+  const v = Number(String(t).trim());
+  return Number.isFinite(v) ? v : NaN;
+}
+function splitLine(line){
+  if(line.includes("\t")) return line.split("\t");
+  if(line.includes(","))  return line.split(",");
+  return line.trim().split(/\s+/);
+}
+function isCommentOrBlank(line){
+  const s = line.trim();
+  return s === "" || s.startsWith("#") || s.startsWith("//");
+}
+function detectHeader(tokens){
+  return tokens.some(t => /[A-Za-z]/.test(String(t)));
+}
+function normalizeHeader(h){
+  return String(h).trim().toLowerCase()
+    .replace(/\s+/g,'')
+    .replace(/_/g,'')
+    .replace(/-/g,'');
+}
+
+/* =========================
+   Parse nodes: node x y dX dY theta Fx Fy M
+   ========================= */
+function parseNodes(text){
+  const lines = text.split(/\r?\n/);
+  const rows = [];
+  for(const line of lines){
+    if(isCommentOrBlank(line)) continue;
+    const toks = splitLine(line).map(s=>String(s).trim());
+    if(toks.length) rows.push(toks);
+  }
+  if(rows.length === 0) throw new Error("No node data rows found.");
+
+  let headerMap = null, startIdx = 0;
+  if(detectHeader(rows[0])){
+    headerMap = new Map();
+    rows[0].forEach((h,i)=>headerMap.set(normalizeHeader(h), i));
+    startIdx = 1;
+  }
+  const get = (toks, name, idxFallback) => {
+    if(headerMap){
+      const i = headerMap.get(normalizeHeader(name));
+      return (i==null) ? null : toks[i];
+    }
+    return toks[idxFallback];
+  };
+
+  const nodes = [];
+  const seen = new Set();
+  for(let r=startIdx; r<rows.length; r++){
+    const toks = rows[r];
+    const nodeTok = get(toks,"node",0) ?? get(toks,"nodeno",0) ?? toks[0];
+    const id = parseInt(String(nodeTok).trim(), 10);
+    if(!Number.isFinite(id)) throw new Error(`Row ${r+1}: invalid node number "${nodeTok}"`);
+    if(seen.has(id)) throw new Error(`Row ${r+1}: duplicate node number ${id}`);
+    seen.add(id);
+
+    const x = toNumberOrNull(get(toks,"x",1));
+    const y = toNumberOrNull(get(toks,"y",2));
+    if(!Number.isFinite(x)) throw new Error(`Row ${r+1}: invalid X`);
+    if(!Number.isFinite(y)) throw new Error(`Row ${r+1}: invalid Y`);
+
+    const dx = toNumberOrNull(get(toks,"dx",3) ?? get(toks,"delx",3));
+    const dy = toNumberOrNull(get(toks,"dy",4) ?? get(toks,"dely",4));
+    const th = toNumberOrNull(get(toks,"theta",5) ?? get(toks,"thetaxy",5) ?? get(toks,"rz",5));
+
+    const fx = toNumberOrZero(get(toks,"fx",6));
+    const fy = toNumberOrZero(get(toks,"fy",7));
+    const mz = toNumberOrZero(get(toks,"m",8) ?? get(toks,"mxy",8) ?? get(toks,"mz",8));
+
+    if(!Number.isFinite(fx)) throw new Error(`Row ${r+1}: invalid Fx`);
+    if(!Number.isFinite(fy)) throw new Error(`Row ${r+1}: invalid Fy`);
+    if(!Number.isFinite(mz)) throw new Error(`Row ${r+1}: invalid M`);
+    if(dx!==null && !Number.isFinite(dx)) throw new Error(`Row ${r+1}: invalid dX`);
+    if(dy!==null && !Number.isFinite(dy)) throw new Error(`Row ${r+1}: invalid dY`);
+    if(th!==null && !Number.isFinite(th)) throw new Error(`Row ${r+1}: invalid theta`);
+
+    nodes.push({
+      id, x, y,
+      ux: { prescribed: dx!==null, value: dx ?? 0 },
+      uy: { prescribed: dy!==null, value: dy ?? 0 },
+      rz: { prescribed: th!==null, value: th ?? 0 },
+      loads: { fx, fy, mz }
+    });
+  }
+  return nodes;
+}
+
+/* =========================
+   Parse elems: ni nj E I A S SF MatType(1/2)
+   ========================= */
+function parseElems(text){
+  const lines = text.split(/\r?\n/);
+  const rows = [];
+  for(const line of lines){
+    if(isCommentOrBlank(line)) continue;
+    const toks = splitLine(line).map(s=>String(s).trim());
+    if(toks.length) rows.push(toks);
+  }
+  if(rows.length === 0) throw new Error("No segment data rows found.");
+
+  let headerMap = null, startIdx = 0;
+  if(detectHeader(rows[0])){
+    headerMap = new Map();
+    rows[0].forEach((h,i)=>headerMap.set(normalizeHeader(h), i));
+    startIdx = 1;
+  }
+  const get = (toks, name, idxFallback) => {
+    if(headerMap){
+      const i = headerMap.get(normalizeHeader(name));
+      return (i==null) ? null : toks[i];
+    }
+    return toks[idxFallback];
+  };
+
+  const elems = [];
+  for(let r=startIdx; r<rows.length; r++){
+    const toks = rows[r];
+
+    const niTok = get(toks,"ni",0) ?? get(toks,"nodei",0) ?? toks[0];
+    const njTok = get(toks,"nj",1) ?? get(toks,"nodej",1) ?? toks[1];
+    const ni = parseInt(String(niTok).trim(),10);
+    const nj = parseInt(String(njTok).trim(),10);
+    if(!Number.isFinite(ni) || !Number.isFinite(nj)) throw new Error(`Row ${r+1}: invalid node i/j`);
+    if(ni === nj) throw new Error(`Row ${r+1}: ni and nj cannot be the same (${ni})`);
+
+    const E = toNumberOrNull(get(toks,"e",2));
+    const I = toNumberOrNull(get(toks,"i",3));
+    const A = toNumberOrNull(get(toks,"a",4));
+    const S = toNumberOrZero(get(toks,"s",5));
+    const SFraw = toNumberOrZero(get(toks,"sf",6));
+    const matTok = get(toks,"mattype",7) ?? get(toks,"mat",7) ?? get(toks,"type",7) ?? toks[7];
+
+    if(!Number.isFinite(E) || E<=0) throw new Error(`Row ${r+1}: invalid E (must be > 0)`);
+    if(!Number.isFinite(I) || I<=0) throw new Error(`Row ${r+1}: invalid I (must be > 0)`);
+    if(!Number.isFinite(A) || A<=0) throw new Error(`Row ${r+1}: invalid A (must be > 0)`);
+    if(!Number.isFinite(S)) throw new Error(`Row ${r+1}: invalid S`);
+    if(!Number.isFinite(SFraw)) throw new Error(`Row ${r+1}: invalid SF`);
+
+    const matRaw = String(matTok ?? "").trim();
+    let matType = 0;
+    if(matRaw === "1") matType = 1;
+    else if(matRaw === "2") matType = 2;
+    else throw new Error(`Row ${r+1}: MatType must be 1(ductile) or 2(brittle)`);
+
+    const SF = (SFraw===0 ? 1 : SFraw);
+    elems.push({ id: r - startIdx + 1, ni, nj, E, I, A, S, SF, matType });
+  }
+  return elems;
+}
+
+/* =========================
+   Install / invalidate
+   ========================= */
+function invalidateSolutionAndDefScale(){
+  Model.lastSolution = null;
+  el.defScale.value = 0;
+  el.defScale.disabled = true;
+  el.defScaleLabel.textContent = "0";
+}
+function installNodes(nodes){
+  Model.nodes = nodes;
+  Model.nodeById = new Map(nodes.map(n=>[n.id,n]));
+  Model.isDrawn = false;
+  invalidateSolutionAndDefScale();
+}
+function installElems(elems){
+  Model.elems = elems;
+  Model.elemById = new Map(elems.map(e=>[e.id,e]));
+  Model.isDrawn = false;
+  invalidateSolutionAndDefScale();
+}
+function crossValidate(){
+  let ok = true;
+  for(const e of Model.elems){
+    if(!Model.nodeById.has(e.ni)){ logLine(`ERROR: Segment ${e.id} references missing node ${e.ni}`, "log-err"); ok=false; }
+    if(!Model.nodeById.has(e.nj)){ logLine(`ERROR: Segment ${e.id} references missing node ${e.nj}`, "log-err"); ok=false; }
+  }
+  return ok;
+}
+function updateButtons(){
+  const haveData = (Model.nodes.length>0 && Model.elems.length>0);
+  el.btnDraw.disabled = !haveData;
+  el.btnSolve.disabled = !haveData;
+}
+
+/* =========================
+   SOLID FIX:
+   Always “sync” from the current textareas before Draw and Solve.
+   This guarantees that edits take effect immediately (no finicky “double solve”).
+   ========================= */
+function syncFromTextareas({nodes=true, elems=true, announce=false} = {}){
+  // parse + install from the current textarea text
+  // if parsing fails, do not partially update; throw error
+  const newNodes = nodes ? parseNodes(el.taNodes.value || "") : null;
+  const newElems = elems ? parseElems(el.taElems.value || "") : null;
+
+  if(nodes) installNodes(newNodes);
+  if(elems) installElems(newElems);
+
+  if(announce){
+    if(nodes) logLine("OK: Synced Nodes from textarea.", "log-ok");
+    if(elems) logLine("OK: Synced Segments from textarea.", "log-ok");
+  }
+
+  renderSummary();
+  updateButtons();
+}
+
+/* =========================
+   View transform
+   ========================= */
+function worldToScreen(pt){
+  return { x: pt.x * View.cam.scale + View.cam.panX, y: (-pt.y) * View.cam.scale + View.cam.panY };
+}
+function screenToWorld(pt){
+  return { x: (pt.x - View.cam.panX) / View.cam.scale, y: -(pt.y - View.cam.panY) / View.cam.scale };
+}
+function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+function fitView(nodes){
+  if(!nodes || nodes.length===0) return;
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  for(const n of nodes){
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  }
+  const dx = Math.max(1e-9, maxX - minX);
+  const dy = Math.max(1e-9, maxY - minY);
+  const pad = 0.15;
+  const w = el.canvas.width, h = el.canvas.height;
+  const scale = Math.min((w*(1-2*pad))/dx, (h*(1-2*pad))/dy);
+  const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
+  View.cam.scale = scale;
+  View.cam.panX = w/2 - cx*scale;
+  View.cam.panY = h/2 + cy*scale;
+}
+
+/* =========================
+   Drawing + load glyphs + deflected overlay
+   ========================= */
+function clearCanvas(){
+  ctx.clearRect(0,0,el.canvas.width,el.canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0,0,el.canvas.width,el.canvas.height);
+}
+function niceStep(raw){
+  const k = Math.floor(Math.log10(raw));
+  const base = raw / Math.pow(10,k);
+  let m = 1;
+  if(base>5) m=10;
+  else if(base>2) m=5;
+  else if(base>1) m=2;
+  else m=1;
+  return m*Math.pow(10,k);
+}
+function drawGrid(){
+  const w = el.canvas.width, h = el.canvas.height;
+  const targetPx = 55;
+  const stepWorld = niceStep(targetPx / View.cam.scale);
+
+  const p0 = screenToWorld({x:0,y:h});
+  const p1 = screenToWorld({x:w,y:0});
+  const minX = Math.min(p0.x,p1.x), maxX = Math.max(p0.x,p1.x);
+  const minY = Math.min(p0.y,p1.y), maxY = Math.max(p0.y,p1.y);
+
+  const x0 = Math.floor(minX/stepWorld)*stepWorld;
+  const x1 = Math.ceil(maxX/stepWorld)*stepWorld;
+  const y0 = Math.floor(minY/stepWorld)*stepWorld;
+  const y1 = Math.ceil(maxY/stepWorld)*stepWorld;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(0,0,0,0.06)";
+  ctx.lineWidth = 1;
+
+  for(let x=x0; x<=x1+1e-9; x+=stepWorld){
+    const a = worldToScreen({x, y:minY});
+    const b = worldToScreen({x, y:maxY});
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  for(let y=y0; y<=y1+1e-9; y+=stepWorld){
+    const a = worldToScreen({x:minX, y});
+    const b = worldToScreen({x:maxX, y});
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+
+  ctx.strokeStyle = "rgba(0,0,0,0.18)";
+  ctx.lineWidth = 1.5;
+  { const a = worldToScreen({x:0,y:minY}); const b = worldToScreen({x:0,y:maxY}); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  { const a = worldToScreen({x:minX,y:0}); const b = worldToScreen({x:maxX,y:0}); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  ctx.restore();
+}
+function drawArrow(px,py, dx,dy, color="#111827"){
+  const L = Math.hypot(dx,dy);
+  if(L < 1e-6) return;
+  const ux = dx/L, uy = dy/L;
+  const head = Math.min(10, Math.max(6, 0.25*L));
+  const hx = px + dx, hy = py + dy;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.8;
+
+  ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(hx,hy); ctx.stroke();
+
+  const nx = -uy, ny = ux;
+  ctx.beginPath();
+  ctx.moveTo(hx,hy);
+  ctx.lineTo(hx - head*ux + 0.55*head*nx, hy - head*uy + 0.55*head*ny);
+  ctx.lineTo(hx - head*ux - 0.55*head*nx, hy - head*uy - 0.55*head*ny);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+function drawMomentGlyph(px,py, sign, color="#111827"){
+  const r = 12;
+  const start = sign>0 ? Math.PI*0.15 : Math.PI*1.15;
+  const end   = sign>0 ? Math.PI*1.15 : Math.PI*0.15;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.arc(px,py,r,start,end, sign<0);
+  ctx.stroke();
+
+  const ex = px + r*Math.cos(end);
+  const ey = py + r*Math.sin(end);
+  const tx = -Math.sin(end);
+  const ty =  Math.cos(end);
+  const dir = (sign>0) ? 1 : -1;
+
+  const ah = 7;
+  const ux = dir*tx, uy = dir*ty;
+  const nx = -uy, ny = ux;
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(ex,ey);
+  ctx.lineTo(ex - ah*ux + 0.55*ah*nx, ey - ah*uy + 0.55*ah*ny);
+  ctx.lineTo(ex - ah*ux - 0.55*ah*nx, ey - ah*uy - 0.55*ah*ny);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function overlayDeflectedIfAvailable(){
+  if(!Model.lastSolution) return;
+  const scale = Number(el.defScale.value);
+  if(!(scale > 0)) return;
+
+  const { expanded, U } = Model.lastSolution;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(220,38,38,0.85)";
+  ctx.lineWidth = 2.0;
+  for(const e of expanded.elems){
+    const n1 = expanded.nodes[e.ni];
+    const n2 = expanded.nodes[e.nj];
+    const ux1 = U[3*e.ni+0], uy1 = U[3*e.ni+1];
+    const ux2 = U[3*e.nj+0], uy2 = U[3*e.nj+1];
+
+    const p1 = worldToScreen({ x: n1.x + scale*ux1, y: n1.y + scale*uy1 });
+    const p2 = worldToScreen({ x: n2.x + scale*ux2, y: n2.y + scale*uy2 });
+
+    ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPrimary(){
+  clearCanvas();
+  drawGrid();
+
+  // elements
+  ctx.save();
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.lineWidth = 2.0;
+  for(const e of Model.elems){
+    const ni = Model.nodeById.get(e.ni);
+    const nj = Model.nodeById.get(e.nj);
+    if(!ni || !nj) continue;
+    const a = worldToScreen(ni);
+    const b = worldToScreen(nj);
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  ctx.restore();
+
+  // nodes + loads
+  for(const n of Model.nodes){
+    const p = worldToScreen(n);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(p.x,p.y,4.2,0,Math.PI*2);
+    ctx.fillStyle = "rgba(37,99,235,0.65)";
+    ctx.fill();
+    ctx.restore();
+
+    const fx = n.loads.fx || 0;
+    const fy = n.loads.fy || 0;
+    const mz = n.loads.mz || 0;
+
+    const fmag = Math.hypot(fx,fy);
+    if(fmag > 0){
+      const L = 35 * (fmag / (fmag + 1000)); // heuristic scaling
+      const dx = (fx / fmag) * L;
+      const dy = (-fy / fmag) * L;
+      drawArrow(p.x, p.y, dx, dy, "#111827");
+    }
+    if(mz !== 0){
+      drawMomentGlyph(p.x, p.y, Math.sign(mz), "#111827");
+    }
+  }
+
+  overlayDeflectedIfAvailable();
+}
+
+/* =========================
+   Solver (expanded mesh / postproc)
+   ========================= */
+function buildExpandedModel(nSub = 10){
+  const expanded = { nodes: [], elems: [], mapPrimaryToExpandedIndex: new Map() };
+  const primaryNodesSorted = [...Model.nodes].slice().sort((a,b)=>a.id-b.id);
+
+  for(const pn of primaryNodesSorted){
+    const idx = expanded.nodes.length;
+    expanded.nodes.push({
+      x: pn.x, y: pn.y,
+      label: `N${pn.id}`,
+      bc: {
+        ux: { prescribed: pn.ux.prescribed, value: pn.ux.value },
+        uy: { prescribed: pn.uy.prescribed, value: pn.uy.value },
+        rz: { prescribed: pn.rz.prescribed, value: pn.rz.value }
+      },
+      loads: { fx: pn.loads.fx, fy: pn.loads.fy, mz: pn.loads.mz }
+    });
+    expanded.mapPrimaryToExpandedIndex.set(pn.id, idx);
+  }
+
+  for(const pe of Model.elems){
+    const nI = Model.nodeById.get(pe.ni);
+    const nJ = Model.nodeById.get(pe.nj);
+    if(!nI || !nJ) continue;
+
+    const iExp = expanded.mapPrimaryToExpandedIndex.get(pe.ni);
+    const jExp = expanded.mapPrimaryToExpandedIndex.get(pe.nj);
+
+    const internalIdx = [];
+    for(let k=1;k<nSub;k++){
+      const t = k / nSub;
+      const idx = expanded.nodes.length;
+      expanded.nodes.push({
+        x: nI.x + t*(nJ.x - nI.x),
+        y: nI.y + t*(nJ.y - nI.y),
+        label: `S${pe.id}.${k}`,
+        bc: { ux:{prescribed:false,value:0}, uy:{prescribed:false,value:0}, rz:{prescribed:false,value:0} },
+        loads: { fx:0, fy:0, mz:0 }
+      });
+      internalIdx.push(idx);
+    }
+
+    const chain = [iExp, ...internalIdx, jExp];
+    for(let s=0; s<nSub; s++){
+      expanded.elems.push({
+        ni: chain[s], nj: chain[s+1],
+        E: pe.E, I: pe.I, A: pe.A, S: pe.S, SF: pe.SF, matType: pe.matType,
+        primaryElemId: pe.id,
+        subIndex: s+1
+      });
+    }
+  }
+  return expanded;
+}
+
+function solveLinearSystemDense(A, b){
+  const n = b.length;
+  const M = Array.from({length:n}, (_,i)=> Float64Array.from(A[i]));
+  const rhs = new Float64Array(b);
+
+  for(let k=0;k<n;k++){
+    let piv = k;
+    let max = Math.abs(M[k][k]);
+    for(let i=k+1;i<n;i++){
+      const v = Math.abs(M[i][k]);
+      if(v>max){ max=v; piv=i; }
+    }
+    if(max === 0 || !Number.isFinite(max)) throw new Error("Singular or ill-conditioned stiffness matrix (pivot=0).");
+
+    if(piv !== k){
+      const tmpRow = M[k]; M[k] = M[piv]; M[piv] = tmpRow;
+      const tmpB = rhs[k]; rhs[k] = rhs[piv]; rhs[piv] = tmpB;
+    }
+
+    const akk = M[k][k];
+    for(let i=k+1;i<n;i++){
+      const factor = M[i][k] / akk;
+      if(factor === 0) continue;
+      rhs[i] -= factor * rhs[k];
+      const Mi = M[i], Mk = M[k];
+      for(let j=k;j<n;j++) Mi[j] -= factor * Mk[j];
+    }
+  }
+
+  const sol = new Float64Array(n);
+  for(let i=n-1;i>=0;i--){
+    let sum = rhs[i];
+    const Mi = M[i];
+    for(let j=i+1;j<n;j++) sum -= Mi[j] * sol[j];
+    sol[i] = sum / Mi[i];
+  }
+  return sol;
+}
+
+function elementLocalStiffness(E,A,I,L){
+  const EA_L = (E*A)/L;
+  const EI = E*I;
+  const EI_L3 = EI/(L*L*L);
+  const EI_L2 = EI/(L*L);
+  const EI_L1 = EI/L;
+  return [
+    [ EA_L,      0,         0,     -EA_L,      0,         0 ],
+    [ 0,     12*EI_L3,  6*EI_L2,     0,    -12*EI_L3,  6*EI_L2 ],
+    [ 0,      6*EI_L2,  4*EI_L1,     0,     -6*EI_L2,  2*EI_L1 ],
+    [ -EA_L,     0,         0,      EA_L,      0,         0 ],
+    [ 0,    -12*EI_L3, -6*EI_L2,     0,     12*EI_L3, -6*EI_L2 ],
+    [ 0,      6*EI_L2,  2*EI_L1,     0,     -6*EI_L2,  4*EI_L1 ]
+  ];
+}
+
+function solveStaticExpanded(expanded){
+  const N = expanded.nodes.length;
+  const ndof = 3*N;
+
+  const K = Array.from({length: ndof}, ()=> new Float64Array(ndof));
+  const F = new Float64Array(ndof);
+  const U = new Float64Array(ndof);
+
+  for(let i=0;i<N;i++){
+    const n = expanded.nodes[i];
+    F[3*i+0] += n.loads.fx;
+    F[3*i+1] += n.loads.fy;
+    F[3*i+2] += n.loads.mz;
+  }
+
+  for(const e of expanded.elems){
+    const n1 = expanded.nodes[e.ni];
+    const n2 = expanded.nodes[e.nj];
+    const dx = n2.x-n1.x, dy = n2.y-n1.y;
+    const L = Math.hypot(dx,dy);
+    if(!(L>0)) throw new Error("Zero-length element detected in expanded mesh.");
+    const c = dx/L, s = dy/L;
+
+    const k = elementLocalStiffness(e.E,e.A,e.I,L);
+
+    const T = [
+      [  c,  s, 0,  0, 0, 0 ],
+      [ -s,  c, 0,  0, 0, 0 ],
+      [  0,  0, 1,  0, 0, 0 ],
+      [  0,  0, 0,  c, s, 0 ],
+      [  0,  0, 0, -s, c, 0 ],
+      [  0,  0, 0,  0, 0, 1 ]
+    ];
+
+    const tmp = Array.from({length:6}, ()=> new Float64Array(6));
+    for(let i=0;i<6;i++){
+      for(let j=0;j<6;j++){
+        let sum = 0;
+        for(let m=0;m<6;m++) sum += k[i][m] * T[m][j];
+        tmp[i][j] = sum;
+      }
+    }
+    const kg = Array.from({length:6}, ()=> new Float64Array(6));
+    for(let i=0;i<6;i++){
+      for(let j=0;j<6;j++){
+        let sum = 0;
+        for(let m=0;m<6;m++) sum += T[m][i] * tmp[m][j];
+        kg[i][j] = sum;
+      }
+    }
+
+    const dofs = [3*e.ni+0,3*e.ni+1,3*e.ni+2,3*e.nj+0,3*e.nj+1,3*e.nj+2];
+    for(let a=0;a<6;a++){
+      const Irow = dofs[a];
+      const Krow = K[Irow];
+      for(let b=0;b<6;b++) Krow[dofs[b]] += kg[a][b];
+    }
+  }
+
+  const fixed=[], fixedVal=[], free=[];
+  for(let i=0;i<N;i++){
+    const bc = expanded.nodes[i].bc;
+    const d0=3*i+0, d1=3*i+1, d2=3*i+2;
+    if(bc.ux.prescribed){ fixed.push(d0); fixedVal.push(bc.ux.value); } else free.push(d0);
+    if(bc.uy.prescribed){ fixed.push(d1); fixedVal.push(bc.uy.value); } else free.push(d1);
+    if(bc.rz.prescribed){ fixed.push(d2); fixedVal.push(bc.rz.value); } else free.push(d2);
+  }
+  if(free.length===0) throw new Error("All DOFs are prescribed; nothing to solve.");
+
+  const nF=free.length, nC=fixed.length;
+  const Rf=new Float64Array(nF);
+  for(let a=0;a<nF;a++){
+    const I=free[a];
+    let rhs=F[I];
+    for(let b=0;b<nC;b++){
+      const J=fixed[b];
+      rhs -= K[I][J]*fixedVal[b];
+    }
+    Rf[a]=rhs;
+  }
+  const Kff=Array.from({length:nF}, ()=> new Float64Array(nF));
+  for(let a=0;a<nF;a++){
+    const I=free[a];
+    for(let b=0;b<nF;b++){
+      const J=free[b];
+      Kff[a][b]=K[I][J];
+    }
+  }
+  const Uf=solveLinearSystemDense(Kff,Rf);
+
+  for(let b=0;b<nC;b++) U[fixed[b]]=fixedVal[b];
+  for(let a=0;a<nF;a++) U[free[a]]=Uf[a];
+
+  return { U, F, meta:{N,ndof,nFree:nF,nFixed:nC} };
+}
+
+function summarizeDisplacements(expanded, U){
+  let maxMag = { val:-Infinity, label:"" };
+  let minMag = { val:+Infinity, label:"" };
+  for(let i=0;i<expanded.nodes.length;i++){
+    const ux = U[3*i+0], uy = U[3*i+1];
+    const mag = Math.hypot(ux,uy);
+    const lab = expanded.nodes[i].label || `idx${i}`;
+    if(mag > maxMag.val) maxMag = { val:mag, label:lab };
+    if(mag < minMag.val) minMag = { val:mag, label:lab };
+  }
+  return { maxMag, minMag };
+}
+
+function elementEndForcesLocal(expanded, e, U){
+  const n1 = expanded.nodes[e.ni];
+  const n2 = expanded.nodes[e.nj];
+  const dx = n2.x-n1.x, dy = n2.y-n1.y;
+  const L = Math.hypot(dx,dy);
+  const c = dx/L, s = dy/L;
+
+  const uG = new Float64Array(6);
+  uG[0]=U[3*e.ni+0]; uG[1]=U[3*e.ni+1]; uG[2]=U[3*e.ni+2];
+  uG[3]=U[3*e.nj+0]; uG[4]=U[3*e.nj+1]; uG[5]=U[3*e.nj+2];
+
+  const uL = new Float64Array(6);
+  uL[0]= c*uG[0] + s*uG[1];
+  uL[1]=-s*uG[0] + c*uG[1];
+  uL[2]= uG[2];
+  uL[3]= c*uG[3] + s*uG[4];
+  uL[4]=-s*uG[3] + c*uG[4];
+  uL[5]= uG[5];
+
+  const kL = elementLocalStiffness(e.E,e.A,e.I,L);
+  const fL = new Float64Array(6);
+  for(let i=0;i<6;i++){
+    let sum=0;
+    for(let j=0;j<6;j++) sum += kL[i][j]*uL[j];
+    fL[i]=sum;
+  }
+  return { fL };
+}
+
+function summarizeStresses(expanded, U){
+  let maxSig = { val:-Infinity, at:"" };
+  let minSig = { val:+Infinity, at:"" };
+  for(const e of expanded.elems){
+    const {fL} = elementEndForcesLocal(expanded, e, U);
+    const N1 = fL[0];
+    const N2 = -fL[3];
+    const N = 0.5*(N1+N2);
+    const M1 = fL[2], M2 = fL[5];
+    const Mabs = Math.max(Math.abs(M1), Math.abs(M2));
+    const sigAx = N / e.A;
+    const sigB = (e.S>0) ? (Mabs / e.S) : 0;
+    const sigTop = sigAx + sigB;
+    const sigBot = sigAx - sigB;
+    const localMax = Math.max(sigTop, sigBot);
+    const localMin = Math.min(sigTop, sigBot);
+    const where = `seg ${e.primaryElemId}, sub ${e.subIndex}`;
+    if(localMax > maxSig.val) maxSig = { val:localMax, at:where };
+    if(localMin < minSig.val) minSig = { val:localMin, at:where };
+  }
+  return { maxSig, minSig };
+}
+
+/* =========================
+   UI wiring
+   ========================= */
+el.btnImportNodes.addEventListener('click', ()=> el.fileNodes.click());
+el.btnImportElems.addEventListener('click', ()=> el.fileElems.click());
+
+el.fileNodes.addEventListener('change', async ()=>{
+  const f = el.fileNodes.files?.[0];
+  if(!f) return;
+  logClear(); setStatus("Reading nodes...");
+  try{
+    el.taNodes.value = await f.text();      // load into textarea
+    syncFromTextareas({nodes:true, elems:false, announce:true}); // and install
+    logLine(`OK: Loaded nodes file "${f.name}" into textarea.`, "log-ok");
+  }catch(err){ logLine(`ERROR: ${err.message}`, "log-err"); }
+  setStatus("Idle"); el.fileNodes.value="";
+});
+
+el.fileElems.addEventListener('change', async ()=>{
+  const f = el.fileElems.files?.[0];
+  if(!f) return;
+  logClear(); setStatus("Reading segments...");
+  try{
+    el.taElems.value = await f.text();      // load into textarea
+    syncFromTextareas({nodes:false, elems:true, announce:true}); // and install
+    logLine(`OK: Loaded segments file "${f.name}" into textarea.`, "log-ok");
+  }catch(err){ logLine(`ERROR: ${err.message}`, "log-err"); }
+  setStatus("Idle"); el.fileElems.value="";
+});
+
+// Use buttons: still supported (explicit commit), but now optional
+el.btnParseNodes.addEventListener('click', ()=>{
+  logClear(); setStatus("Syncing nodes...");
+  try{ syncFromTextareas({nodes:true, elems:false, announce:true}); }
+  catch(err){ logLine(`ERROR: ${err.message}`, "log-err"); }
+  setStatus("Idle");
+});
+el.btnParseElems.addEventListener('click', ()=>{
+  logClear(); setStatus("Syncing segments...");
+  try{ syncFromTextareas({nodes:false, elems:true, announce:true}); }
+  catch(err){ logLine(`ERROR: ${err.message}`, "log-err"); }
+  setStatus("Idle");
+});
+
+// Reset buttons: now reset AND install immediately (no stale model possible)
+el.btnResetNodes.addEventListener('click', ()=>{
+  logClear();
+  el.taNodes.value = DEFAULT_NODES_TEXT;
+  try{
+    syncFromTextareas({nodes:true, elems:false, announce:false});
+    logLine("OK: Nodes reset to defaults and installed.", "log-ok");
+  }catch(err){
+    logLine(`ERROR resetting nodes: ${err.message}`, "log-err");
+  }
+  setStatus("Idle");
+});
+el.btnResetElems.addEventListener('click', ()=>{
+  logClear();
+  el.taElems.value = DEFAULT_ELEMS_TEXT;
+  try{
+    syncFromTextareas({nodes:false, elems:true, announce:false});
+    logLine("OK: Segments reset to defaults and installed.", "log-ok");
+  }catch(err){
+    logLine(`ERROR resetting segments: ${err.message}`, "log-err");
+  }
+  setStatus("Idle");
+});
+
+// Draw: SOLID FIX — re-sync from textareas first (both)
+el.btnDraw.addEventListener('click', ()=>{
+  logClear(); setStatus("Syncing + validating...");
+  try{
+    syncFromTextareas({nodes:true, elems:true, announce:false}); // always read current text
+  }catch(err){
+    logLine(`ERROR: ${err.message}`, "log-err");
+    setStatus("Fix input");
+    return;
+  }
+
+  if(!crossValidate()){ setStatus("Fix input"); return; }
+
+  View.isInteractive = true;
+  fitView(Model.nodes);
+  Model.isDrawn = true;
+  drawPrimary();
+  setStatus("Interactive");
+  logLine("OK: Frame drawn (always reflects current textareas).", "log-ok");
+});
+
+// Solve: SOLID FIX — re-sync from textareas first (both), then solve ONCE
+el.btnSolve.addEventListener('click', ()=>{
+  logClear(); setStatus("Syncing + validating...");
+  try{
+    syncFromTextareas({nodes:true, elems:true, announce:false}); // always read current text
+  }catch(err){
+    logLine(`ERROR: ${err.message}`, "log-err");
+    setStatus("Fix input");
+    return;
+  }
+
+  if(!crossValidate()){ setStatus("Fix input"); return; }
+
+  try{
+    setStatus("Expanding mesh...");
+    const expanded = buildExpandedModel(10);
+
+    setStatus("Solving...");
+    const sol = solveStaticExpanded(expanded);
+
+    setStatus("Post-processing...");
+    const disp = summarizeDisplacements(expanded, sol.U);
+    const stress = summarizeStresses(expanded, sol.U);
+
+    Model.lastSolution = { expanded, U: sol.U, F: sol.F, meta: sol.meta, disp, stress };
+    renderSummary();
+
+    el.defScale.disabled = false;
+    el.defScale.value = 0;
+    el.defScaleLabel.textContent = "0";
+
+    logLine(`OK: Static solve complete. DOF ${sol.meta.ndof} (free ${sol.meta.nFree}, fixed ${sol.meta.nFixed}).`, "log-ok");
+    logLine(`Displacements (expanded): Max |u| = ${disp.maxMag.val} at ${disp.maxMag.label}`, "log-ok");
+    logLine(`Displacements (expanded): Min |u| = ${disp.minMag.val} at ${disp.minMag.label}`, "log-ok");
+    logLine(`Stresses: Max sigma = ${stress.maxSig.val} at ${stress.maxSig.at}`, "log-ok");
+    logLine(`Stresses: Min sigma = ${stress.minSig.val} at ${stress.minSig.at}`, "log-ok");
+
+    View.isInteractive = true;
+    fitView(Model.nodes);
+    Model.isDrawn = true;
+    drawPrimary();
+    setStatus("Solved (use deflection scale slider)");
+  }catch(err){
+    logLine(`ERROR: ${err.message}`, "log-err");
+    setStatus("Solve failed");
+  }
+});
+
+el.defScale.addEventListener('input', ()=>{
+  el.defScaleLabel.textContent = String(el.defScale.value);
+  if(Model.isDrawn) drawPrimary();
+});
+
+/* =========================
+   Pan/zoom
+   ========================= */
+function canvasPointFromEvent(evt){
+  const r = el.canvas.getBoundingClientRect();
+  return { x:(evt.clientX-r.left)*(el.canvas.width/r.width), y:(evt.clientY-r.top)*(el.canvas.height/r.height) };
+}
+el.canvas.addEventListener('mousedown',(evt)=>{
+  if(!View.isInteractive) return;
+  View.dragging=true;
+  const p=canvasPointFromEvent(evt);
+  View.dragStart.x=p.x; View.dragStart.y=p.y;
+  View.dragStart.panX=View.cam.panX; View.dragStart.panY=View.cam.panY;
+});
+window.addEventListener('mouseup',()=>{ View.dragging=false; });
+window.addEventListener('mousemove',(evt)=>{
+  if(!View.isInteractive || !View.dragging) return;
+  const p=canvasPointFromEvent(evt);
+  View.cam.panX = View.dragStart.panX + (p.x-View.dragStart.x);
+  View.cam.panY = View.dragStart.panY + (p.y-View.dragStart.y);
+  if(Model.isDrawn) drawPrimary();
+});
+el.canvas.addEventListener('wheel',(evt)=>{
+  if(!View.isInteractive) return;
+  evt.preventDefault();
+  const p=canvasPointFromEvent(evt);
+  const before=screenToWorld(p);
+  const zoomFactor=Math.exp(-evt.deltaY*0.0015);
+  View.cam.scale = clamp(View.cam.scale*zoomFactor, 1e-6, 1e6);
+  const after=screenToWorld(p);
+  View.cam.panX += (after.x-before.x)*View.cam.scale;
+  View.cam.panY += (-after.y+before.y)*View.cam.scale;
+  if(Model.isDrawn) drawPrimary();
+},{passive:false});
+
+/* =========================
+   Startup
+   ========================= */
+function init(){
+  clearCanvas();
+  el.taNodes.value = DEFAULT_NODES_TEXT;
+  el.taElems.value = DEFAULT_ELEMS_TEXT;
+
+  logClear();
+  try{
+    syncFromTextareas({nodes:true, elems:true, announce:false});
+    logLine("Loaded defaults into model. Edit text and click Solve; changes take effect immediately.", "log-ok");
+  }catch(err){
+    logLine(`ERROR loading defaults: ${err.message}`, "log-err");
+  }
+  setStatus("Idle");
+}
+init();
+</script>
+</body>
+</html>
