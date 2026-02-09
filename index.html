@@ -34,7 +34,7 @@
   #log{margin-top:10px; padding:8px; background:#ffffff; border:1px solid var(--line); border-radius:8px; height:190px; overflow:auto; font-size:12px; line-height:1.25; white-space:pre-wrap;}
   .log-warn{color:var(--warn);} .log-err{color:var(--err);} .log-ok{color:var(--ok);}
   #vpBar{display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:0 2px;}
-  #selInfo{font-size:12px; color:var(--muted); min-height:16px;}
+  #selInfo{font-size:12px; color:var(--text); min-height:16px; padding:4px 6px; background:rgba(255,255,255,0.8); border-radius:6px; font-weight:500;}
   textarea{width:100%; box-sizing:border-box; min-height:72px; max-height:140px; resize:vertical; padding:8px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text);
            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; line-height:1.2;}
   .btnRow{display:flex; gap:8px;} .btnRow button{width:50%;}
@@ -86,7 +86,7 @@
       <div class="hint small">After solve, increase scale to view the overlaid deflected shape.</div>
     </div>
 
-    <div class="hint">Viewport: Left-drag = orbit, Right-drag = pan, Wheel = zoom.</div>
+    <div class="hint">Viewport: Left-drag = orbit, Right-drag = pan, Wheel = zoom. Hover nodes for BC info, click to pin.</div>
     <div id="summary"></div>
     <div id="log"></div>
   </div>
@@ -157,7 +157,10 @@ const View = {
   isInteractive: false,
   dragging: false,
   dragButton: 0,
-  dragStart: {x:0, y:0, azimuth:0, elevation:0, centerX:0, centerY:0, centerZ:0}
+  dragStart: {x:0, y:0, azimuth:0, elevation:0, centerX:0, centerY:0, centerZ:0},
+  hoveredNode: null,
+  pinnedNode: null,
+  mousePos: {x:0, y:0}
 };
 
 /* =========================
@@ -437,12 +440,16 @@ function installNodes(nodes){
   Model.nodes = nodes;
   Model.nodeById = new Map(nodes.map(n=>[n.id,n]));
   Model.isDrawn = false;
+  View.hoveredNode = null;
+  View.pinnedNode = null;
   invalidateSolutionAndDefScale();
 }
 function installElems(elems){
   Model.elems = elems;
   Model.elemById = new Map(elems.map(e=>[e.id,e]));
   Model.isDrawn = false;
+  View.hoveredNode = null;
+  View.pinnedNode = null;
   invalidateSolutionAndDefScale();
 }
 function crossValidate(){
@@ -613,6 +620,96 @@ function drawGrid3D(){
   ctx.restore();
 }
 
+function draw3DArrow(x, y, z, fx, fy, fz, color="#dc2626"){
+  // Draw a 3D arrow for a load vector
+  const mag = Math.sqrt(fx*fx + fy*fy + fz*fz);
+  if(mag < 1e-6) return;
+  
+  // Scale arrow length based on magnitude (heuristic)
+  const maxLoad = 5000;
+  const maxLength = 40;
+  const arrowLen = Math.min(maxLength, maxLength * (mag / maxLoad));
+  
+  // Normalize direction
+  const dx = (fx / mag) * arrowLen;
+  const dy = (fy / mag) * arrowLen;
+  const dz = (fz / mag) * arrowLen;
+  
+  // Draw arrow shaft (pointing FROM the load location)
+  const p0 = project3D(x, y, z);
+  const p1 = project3D(x - dx, y - dy, z - dz);
+  
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p0.x, p0.y);
+  ctx.stroke();
+  
+  // Draw arrowhead at the node
+  const headSize = 8;
+  // Create perpendicular vectors for arrowhead in screen space
+  const sx = p0.x - p1.x;
+  const sy = p0.y - p1.y;
+  const slen = Math.sqrt(sx*sx + sy*sy);
+  if(slen > 1e-6){
+    const ux = sx / slen;
+    const uy = sy / slen;
+    const nx = -uy;
+    const ny = ux;
+    
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p0.x - headSize*ux + headSize*0.4*nx, p0.y - headSize*uy + headSize*0.4*ny);
+    ctx.lineTo(p0.x - headSize*ux - headSize*0.4*nx, p0.y - headSize*uy - headSize*0.4*ny);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawBCSymbol(x, y, z, bc){
+  // Draw boundary condition symbol at node
+  const p = project3D(x, y, z);
+  const hasTransBC = bc.ux.prescribed || bc.uy.prescribed || bc.uz.prescribed;
+  const hasRotBC = bc.rx.prescribed || bc.ry.prescribed || bc.rz.prescribed;
+  
+  if(!hasTransBC && !hasRotBC) return; // Free node, no symbol
+  
+  ctx.save();
+  
+  // Draw triangle symbol for fixed translations
+  if(hasTransBC){
+    const size = 10;
+    ctx.fillStyle = "rgba(59,130,246,0.7)";
+    ctx.strokeStyle = "rgba(37,99,235,0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - size);
+    ctx.lineTo(p.x - size*0.866, p.y + size*0.5);
+    ctx.lineTo(p.x + size*0.866, p.y + size*0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  
+  // Draw small square for rotation BCs
+  if(hasRotBC){
+    const size = 6;
+    ctx.fillStyle = "rgba(168,85,247,0.7)";
+    ctx.strokeStyle = "rgba(147,51,234,0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.rect(p.x - size/2, p.y - size/2, size, size);
+    ctx.fill();
+    ctx.stroke();
+  }
+  
+  ctx.restore();
+}
+
 function overlayDeflectedIfAvailable(){
   if(!Model.lastSolution) return;
   const scale = Number(el.defScale.value);
@@ -657,13 +754,52 @@ function drawPrimary(){
   }
   ctx.restore();
 
+  // BC symbols (draw before nodes so nodes appear on top)
+  for(const n of Model.nodes){
+    drawBCSymbol(n.x, n.y, n.z, {
+      ux: n.ux, uy: n.uy, uz: n.uz,
+      rx: n.rx, ry: n.ry, rz: n.rz
+    });
+  }
+
+  // Load arrows
+  for(const n of Model.nodes){
+    const fx = n.loads.fx || 0;
+    const fy = n.loads.fy || 0;
+    const fz = n.loads.fz || 0;
+    if(fx !== 0 || fy !== 0 || fz !== 0){
+      draw3DArrow(n.x, n.y, n.z, fx, fy, fz);
+    }
+  }
+
   // nodes
   for(const n of Model.nodes){
     const p = project3D(n.x, n.y, n.z);
     ctx.save();
-    ctx.beginPath(); ctx.arc(p.x,p.y,4.2,0,Math.PI*2);
-    ctx.fillStyle = "rgba(37,99,235,0.65)";
+    
+    // Highlight if hovered or pinned
+    const isHovered = (View.hoveredNode === n.id);
+    const isPinned = (View.pinnedNode === n.id);
+    const isHighlighted = isHovered || isPinned;
+    const radius = isHighlighted ? 6 : 4.2;
+    
+    ctx.beginPath(); 
+    ctx.arc(p.x, p.y, radius, 0, Math.PI*2);
+    
+    if(isPinned){
+      ctx.fillStyle = "rgba(251,191,36,0.9)"; // Gold for pinned
+    } else if(isHovered){
+      ctx.fillStyle = "rgba(59,130,246,0.9)"; // Blue for hovered
+    } else {
+      ctx.fillStyle = "rgba(37,99,235,0.65)"; // Default blue
+    }
     ctx.fill();
+    
+    if(isHighlighted){
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -1126,12 +1262,79 @@ function canvasPointFromEvent(evt){
   };
 }
 
+function findNodeAtScreenPoint(sx, sy, tolerance = 10){
+  // Find which node (if any) is near the screen point
+  for(const n of Model.nodes){
+    const p = project3D(n.x, n.y, n.z);
+    const dist = Math.sqrt((p.x - sx)**2 + (p.y - sy)**2);
+    if(dist <= tolerance) return n;
+  }
+  return null;
+}
+
+function formatBCTooltip(node){
+  // Format boundary condition tooltip
+  const parts = [];
+  
+  const ux = node.ux.prescribed ? `Ux=${node.ux.value}` : "Ux=free";
+  const uy = node.uy.prescribed ? `Uy=${node.uy.value}` : "Uy=free";
+  const uz = node.uz.prescribed ? `Uz=${node.uz.value}` : "Uz=free";
+  const rx = node.rx.prescribed ? `Rx=${node.rx.value}` : "Rx=free";
+  const ry = node.ry.prescribed ? `Ry=${node.ry.value}` : "Ry=free";
+  const rz = node.rz.prescribed ? `Rz=${node.rz.value}` : "Rz=free";
+  
+  return `Node ${node.id}: ${ux}, ${uy}, ${uz}, ${rx}, ${ry}, ${rz}`;
+}
+
+function updateTooltip(){
+  // Update the tooltip display based on pinned or hovered node
+  const displayNode = View.pinnedNode ?? View.hoveredNode;
+  
+  if(displayNode !== null){
+    const node = Model.nodeById.get(displayNode);
+    if(node){
+      const tooltip = formatBCTooltip(node);
+      const pinIndicator = (View.pinnedNode !== null) ? " (pinned - click elsewhere to unpin)" : "";
+      el.selInfo.textContent = tooltip + pinIndicator;
+      el.selInfo.style.color = "var(--text)";
+    }
+  } else {
+    el.selInfo.textContent = "";
+  }
+}
+
 el.canvas.addEventListener('mousedown',(evt)=>{
   if(!View.isInteractive) return;
   evt.preventDefault();
+  
+  const p = canvasPointFromEvent(evt);
+  
+  // Check if clicking on a node (only for left click)
+  if(evt.button === 0){
+    const clickedNode = findNodeAtScreenPoint(p.x, p.y);
+    if(clickedNode){
+      // Toggle pin on this node
+      if(View.pinnedNode === clickedNode.id){
+        View.pinnedNode = null; // Unpin if already pinned
+      } else {
+        View.pinnedNode = clickedNode.id; // Pin this node
+      }
+      updateTooltip();
+      if(Model.isDrawn) drawPrimary();
+      return; // Don't start drag if clicking a node
+    } else {
+      // Clicked empty space, unpin
+      if(View.pinnedNode !== null){
+        View.pinnedNode = null;
+        updateTooltip();
+        if(Model.isDrawn) drawPrimary();
+      }
+    }
+  }
+  
+  // Start drag operation
   View.dragging = true;
   View.dragButton = evt.button;
-  const p = canvasPointFromEvent(evt);
   View.dragStart.x = p.x;
   View.dragStart.y = p.y;
   View.dragStart.azimuth = View.cam.azimuth;
@@ -1144,32 +1347,48 @@ el.canvas.addEventListener('mousedown',(evt)=>{
 window.addEventListener('mouseup',()=>{ View.dragging=false; });
 
 window.addEventListener('mousemove',(evt)=>{
-  if(!View.isInteractive || !View.dragging) return;
-  const p = canvasPointFromEvent(evt);
-  const dx = p.x - View.dragStart.x;
-  const dy = p.y - View.dragStart.y;
-
-  if(View.dragButton === 0){ // Left button - orbit
-    View.cam.azimuth = View.dragStart.azimuth + dx * 0.01;
-    View.cam.elevation = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, View.dragStart.elevation - dy * 0.01));
-  } else if(View.dragButton === 2){ // Right button - pan
-    const panSpeed = View.cam.distance * 0.002;
-    const right = {
-      x: Math.sin(View.cam.azimuth),
-      y: -Math.cos(View.cam.azimuth)
-    };
-    const up = {
-      x: Math.cos(View.cam.azimuth) * Math.sin(View.cam.elevation),
-      y: Math.sin(View.cam.azimuth) * Math.sin(View.cam.elevation),
-      z: Math.cos(View.cam.elevation)
-    };
-    
-    View.cam.centerX = View.dragStart.centerX - dx * panSpeed * right.x + dy * panSpeed * up.x;
-    View.cam.centerY = View.dragStart.centerY - dx * panSpeed * right.y + dy * panSpeed * up.y;
-    View.cam.centerZ = View.dragStart.centerZ + dy * panSpeed * up.z;
-  }
+  if(!View.isInteractive) return;
   
-  if(Model.isDrawn) drawPrimary();
+  const p = canvasPointFromEvent(evt);
+  View.mousePos.x = p.x;
+  View.mousePos.y = p.y;
+  
+  if(View.dragging){
+    const dx = p.x - View.dragStart.x;
+    const dy = p.y - View.dragStart.y;
+
+    if(View.dragButton === 0){ // Left button - orbit
+      View.cam.azimuth = View.dragStart.azimuth + dx * 0.01;
+      View.cam.elevation = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, View.dragStart.elevation - dy * 0.01));
+    } else if(View.dragButton === 2){ // Right button - pan
+      const panSpeed = View.cam.distance * 0.002;
+      const right = {
+        x: Math.sin(View.cam.azimuth),
+        y: -Math.cos(View.cam.azimuth)
+      };
+      const up = {
+        x: Math.cos(View.cam.azimuth) * Math.sin(View.cam.elevation),
+        y: Math.sin(View.cam.azimuth) * Math.sin(View.cam.elevation),
+        z: Math.cos(View.cam.elevation)
+      };
+      
+      View.cam.centerX = View.dragStart.centerX - dx * panSpeed * right.x + dy * panSpeed * up.x;
+      View.cam.centerY = View.dragStart.centerY - dx * panSpeed * right.y + dy * panSpeed * up.y;
+      View.cam.centerZ = View.dragStart.centerZ + dy * panSpeed * up.z;
+    }
+    
+    if(Model.isDrawn) drawPrimary();
+  } else {
+    // Check for node hover when not dragging
+    const hoveredNode = findNodeAtScreenPoint(p.x, p.y);
+    const newHoverID = hoveredNode ? hoveredNode.id : null;
+    
+    if(newHoverID !== View.hoveredNode){
+      View.hoveredNode = newHoverID;
+      updateTooltip();
+      if(Model.isDrawn) drawPrimary();
+    }
+  }
 });
 
 el.canvas.addEventListener('wheel',(evt)=>{
