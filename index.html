@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Frame Analysis (v2: Clean Data Model - Static/Modal Solver)</title>
+<title>3D Frame Analysis (v2.1: Fixed Force Recovery)</title>
 <style>
   :root{
     --bg:#ffffff;
@@ -18,10 +18,19 @@
     --ok:#166534;
   }
   html,body{height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--text);}
-  #app{height:100%; display:flex; align-items:flex-start; gap:10px; padding:10px; box-sizing:border-box;}
-  #ui{width:375px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box; overflow-y:auto;}
-  #viewportWrap{flex:1; min-width:600px; height:600px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; box-sizing:border-box; display:flex; flex-direction:column; gap:6px;}
+  #app{height:100%; display:grid; grid-template-columns: 375px 1fr; grid-template-rows: 1fr; gap:10px; padding:10px; box-sizing:border-box;}
+  #ui{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box; overflow-y:auto;}
+  #rightColumn{display:flex; flex-direction:column; gap:10px; min-width:0;}
+  #viewportWrap{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; box-sizing:border-box; display:flex; flex-direction:column; gap:6px; min-height:400px;}
   #canvas{width:100%; height:100%; background:#ffffff; border:1px solid var(--line); border-radius:8px; display:block;}
+  #stressPanel{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box; max-height:300px; overflow-y:auto;}
+  #stressContent{font-size:12px;}
+  .stressTable{width:100%; border-collapse:collapse; font-size:11px;}
+  .stressTable th{background:var(--panel); padding:6px 8px; text-align:left; font-weight:600; border-bottom:2px solid var(--line);}
+  .stressTable td{padding:6px 8px; border-bottom:1px solid var(--line);}
+  .stressTable tr:hover{background:rgba(0,0,0,0.02);}
+  .stressLabel{font-weight:600; color:var(--text); margin-bottom:4px;}
+  .stressValue{color:var(--muted);}
   h3{margin:0 0 8px 0; font-size:14px; font-weight:700;}
   .sectionTitle{font-size:12px; font-weight:700; margin:10px 0 6px; color:#1f2937;}
   button{width:100%; padding:8px 10px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text); font-weight:700; cursor:pointer;}
@@ -34,7 +43,7 @@
   #log{margin-top:10px; padding:8px; background:#ffffff; border:1px solid var(--line); border-radius:8px; height:190px; overflow:auto; font-size:12px; line-height:1.25; white-space:pre-wrap;}
   .log-warn{color:var(--warn);} .log-err{color:var(--err);} .log-ok{color:var(--ok);}
   #vpBar{display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:0 2px;}
-  #selInfo{font-size:12px; color:var(--text); min-height:16px; padding:4px 6px; background:rgba(255,255,255,0.8); border-radius:6px; font-weight:500;}
+  #selInfo{font-size:11px; color:var(--text); min-height:16px; padding:4px 6px; background:rgba(255,255,255,0.9); border-radius:6px; font-weight:500; line-height:1.3; word-break:break-word;}
   textarea{width:100%; box-sizing:border-box; min-height:72px; max-height:140px; resize:vertical; padding:8px; border-radius:8px; border:1px solid #cfd6e2; background:#ffffff; color:var(--text);
            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; line-height:1.2;}
   .btnRow{display:flex; gap:8px;} .btnRow button{width:50%;}
@@ -80,58 +89,87 @@
     <div class="sliderWrap">
       <div class="kv">
         <div>Deflection scale</div>
-        <div id="defScaleLabel">0</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input id="defScaleInput" type="number" step="0.1" value="0" disabled 
+                 style="width:70px; padding:4px 6px; border-radius:6px; border:1px solid #cfd6e2; font-size:12px;" />
+          <span id="defScaleLabel" style="font-size:11px; color:var(--muted);">/ <span id="defScaleMax">200</span></span>
+        </div>
       </div>
       <input id="defScale" type="range" min="0" max="200" step="1" value="0" disabled />
-      <div class="hint small">After solve, increase scale to view the overlaid deflected shape.</div>
+      <div style="display:flex; gap:8px; margin-top:4px;">
+        <input id="defScaleMaxInput" type="number" step="10" value="200" placeholder="Max" 
+               style="width:80px; padding:4px 6px; border-radius:6px; border:1px solid #cfd6e2; font-size:11px;" />
+        <button id="btnSetMaxScale" class="mini" style="flex:1;">Set Slider Max</button>
+      </div>
+      <div class="hint small">Adjust scale to view deflected shape. Use input box for precise values.</div>
     </div>
 
-    <div class="hint">Viewport: Left-drag = orbit, Right-drag = pan, Wheel = zoom. Hover nodes for BC info, click to pin.</div>
+    <div class="hint">Viewport: Left-drag = orbit, Right-drag = pan, Wheel = zoom. Hover nodes/segments for info, click to pin.</div>
     <div id="summary"></div>
     <div id="log"></div>
   </div>
 
-  <div id="viewportWrap">
-    <div id="vpBar">
-      <div>3D Viewport</div>
-      <div id="status" class="small">Idle</div>
+  <div id="rightColumn">
+    <div id="viewportWrap">
+      <div id="vpBar">
+        <div>3D Viewport</div>
+        <div id="status" class="small">Idle</div>
+      </div>
+      <canvas id="canvas"></canvas>
+      <div id="selInfo"></div>
     </div>
-    <canvas id="canvas"></canvas>
-    <div id="selInfo"></div>
+
+    <div id="stressPanel">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <h3 style="margin:0;">Element Analysis</h3>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select id="stressViewSelector" style="padding:4px 8px; border-radius:6px; border:1px solid var(--line); font-size:11px; background:#fff;" disabled>
+            <option value="table">Stress Table</option>
+            <option value="moment">Moment Diagrams</option>
+            <option value="shear">Shear Diagrams</option>
+            <option value="combined">Combined Stress</option>
+          </select>
+          <div class="small" style="color:var(--muted);">Click a segment</div>
+        </div>
+      </div>
+      <div id="stressContent">
+        <div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">
+          No segment selected. Click on a segment in the viewport to view its analysis.
+        </div>
+      </div>
+    </div>
   </div>
-</div>
 
 <script>
 /* =========================
-   3D FRAME ANALYSIS v2
-   =========================
-   DEVELOPMENT STATUS:
-   ✓ Data model updated to full 3D (x,y,z coords, 6 DOF per node, 3D element properties)
-   ✓ Material type (brittle/ductile) removed - simple static & modes solver
-   ✓ 3D viewport with orbit/pan/zoom camera controls
-   
-   TODO (Next Steps):
-   - Implement 3D space frame element stiffness (12x12, using E, G, Ayz, Izz, Iyy, Jyz)
-   - Implement local coordinate transformation using x3,y3,z3 orientation point
-   - Update solver to use 6 DOF per node (ux,uy,uz, rx,ry,rz)
-   - Add modal analysis (eigenvalue solver for natural frequencies & mode shapes)
-   - Update stress recovery for 3D elements
+   3D FRAME ANALYSIS v2.1
+   FIXED: Force recovery logic
    ========================= */
 
 /* =========================
    Defaults
    ========================= */
 const DEFAULT_NODES_TEXT =
-`1\t0\t0\t0\t0\t0\t0
-2\t0\t96\t0\t\t\t\t\t\t\t1000\t0\t0
-3\t96\t96\t0
-4\t96\t0\t0\t0\t0\t0`;
+`node	x	y	z	delX	delY	delZ	thetaXX	thetaYY	thetaZZ	Fx	Fy	Fz
+1	0	0	0	0	0	0	0	0	0
+2	0	0	10
+3	12	0	0	0	0	0	0	0	0
+4	12	0	12
+5	0	10	0	0	0	0
+6	0	10	12							100
+7	12	10	0	0	0	0
+8	12	10	12`;
 
 const DEFAULT_ELEMS_TEXT =
-`1\t2\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1
-2\t3\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1
-3\t4\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1
-2\t4\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1`;
+`elem	ni	nj	E	G	Izz	Iyy	Jyz	Ayz	x3	y3	z3
+1	1	2	12000000	4000000	1	1	1	2	1	2	3
+2	3	4	12000000	4000000	1	1	1	2	1	2	3
+3	5	6	12000000	4000000	1	1	1	2	1	2	3
+4	7	8	12000000	4000000	1	1	1	2	1	2	3
+5	4	8	12000000	4000000	1	1	1	2	1	2	3
+6	2	4	12000000	4000000	1	1	1	2	1	2	3
+7	2	6	12000000	4000000	1	1	1	2	1	2	3
+8	6	8	12000000	4000000	1	1	1	2	1	2	3`;
 
 /* =========================
    Model
@@ -147,12 +185,12 @@ const Model = {
 
 const View = {
   cam: {
-    distance: 300,
-    azimuth: 45 * Math.PI / 180,   // horizontal rotation
+    distance: 50,
+    azimuth: 35 * Math.PI / 180,   // horizontal rotation
     elevation: 30 * Math.PI / 180, // vertical rotation
-    centerX: 48,
-    centerY: 48,
-    centerZ: 0
+    centerX: 6,
+    centerY: 5,
+    centerZ: 6
   },
   isInteractive: false,
   dragging: false,
@@ -160,6 +198,9 @@ const View = {
   dragStart: {x:0, y:0, azimuth:0, elevation:0, centerX:0, centerY:0, centerZ:0},
   hoveredNode: null,
   pinnedNode: null,
+  hoveredElem: null,
+  pinnedElem: null,
+  selectedSegmentForAnalysis: null,
   mousePos: {x:0, y:0}
 };
 
@@ -185,7 +226,13 @@ const el = {
   status: document.getElementById('status'),
   selInfo: document.getElementById('selInfo'),
   defScale: document.getElementById('defScale'),
-  defScaleLabel: document.getElementById('defScaleLabel')
+  defScaleLabel: document.getElementById('defScaleLabel'),
+  defScaleInput: document.getElementById('defScaleInput'),
+  defScaleMax: document.getElementById('defScaleMax'),
+  defScaleMaxInput: document.getElementById('defScaleMaxInput'),
+  btnSetMaxScale: document.getElementById('btnSetMaxScale'),
+  stressContent: document.getElementById('stressContent'),
+  stressViewSelector: document.getElementById('stressViewSelector')
 };
 const ctx = el.canvas.getContext('2d');
 
@@ -433,8 +480,9 @@ function parseElems(text){
 function invalidateSolutionAndDefScale(){
   Model.lastSolution = null;
   el.defScale.value = 0;
+  el.defScaleInput.value = 0;
   el.defScale.disabled = true;
-  el.defScaleLabel.textContent = "0";
+  el.defScaleInput.disabled = true;
 }
 function installNodes(nodes){
   Model.nodes = nodes;
@@ -442,6 +490,8 @@ function installNodes(nodes){
   Model.isDrawn = false;
   View.hoveredNode = null;
   View.pinnedNode = null;
+  View.hoveredElem = null;
+  View.pinnedElem = null;
   invalidateSolutionAndDefScale();
 }
 function installElems(elems){
@@ -450,6 +500,8 @@ function installElems(elems){
   Model.isDrawn = false;
   View.hoveredNode = null;
   View.pinnedNode = null;
+  View.hoveredElem = null;
+  View.pinnedElem = null;
   invalidateSolutionAndDefScale();
 }
 function crossValidate(){
@@ -723,13 +775,12 @@ function overlayDeflectedIfAvailable(){
   for(const e of expanded.elems){
     const n1 = expanded.nodes[e.ni];
     const n2 = expanded.nodes[e.nj];
-    // TEMPORARY: Still reading from 3-DOF layout
-    const ux1 = U[3*e.ni+0], uy1 = U[3*e.ni+1];
-    const ux2 = U[3*e.nj+0], uy2 = U[3*e.nj+1];
-    // TODO: Add uz1 = U[3*e.ni+2], uz2 = U[3*e.nj+2] when using 6-DOF
+    // Read from 6-DOF layout
+    const ux1 = U[6*e.ni+0], uy1 = U[6*e.ni+1], uz1 = U[6*e.ni+2];
+    const ux2 = U[6*e.nj+0], uy2 = U[6*e.nj+1], uz2 = U[6*e.nj+2];
 
-    const p1 = project3D(n1.x + scale*ux1, n1.y + scale*uy1, n1.z); // Using undeflected z for now
-    const p2 = project3D(n2.x + scale*ux2, n2.y + scale*uy2, n2.z);
+    const p1 = project3D(n1.x + scale*ux1, n1.y + scale*uy1, n1.z + scale*uz1);
+    const p2 = project3D(n2.x + scale*ux2, n2.y + scale*uy2, n2.z + scale*uz2);
 
     ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
   }
@@ -742,15 +793,33 @@ function drawPrimary(){
 
   // elements
   ctx.save();
-  ctx.strokeStyle = "rgba(0,0,0,0.55)";
-  ctx.lineWidth = 2.0;
   for(const e of Model.elems){
     const ni = Model.nodeById.get(e.ni);
     const nj = Model.nodeById.get(e.nj);
     if(!ni || !nj) continue;
     const a = project3D(ni.x, ni.y, ni.z);
     const b = project3D(nj.x, nj.y, nj.z);
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    
+    // Highlight if hovered or pinned
+    const isHovered = (View.hoveredElem === e.id);
+    const isPinned = (View.pinnedElem === e.id);
+    const isHighlighted = isHovered || isPinned;
+    
+    if(isPinned){
+      ctx.strokeStyle = "rgba(251,191,36,0.95)"; // Gold for pinned
+      ctx.lineWidth = 4.0;
+    } else if(isHovered){
+      ctx.strokeStyle = "rgba(59,130,246,0.9)"; // Blue for hovered
+      ctx.lineWidth = 3.5;
+    } else {
+      ctx.strokeStyle = "rgba(0,0,0,0.55)"; // Default
+      ctx.lineWidth = 2.0;
+    }
+    
+    ctx.beginPath(); 
+    ctx.moveTo(a.x, a.y); 
+    ctx.lineTo(b.x, b.y); 
+    ctx.stroke();
   }
   ctx.restore();
 
@@ -910,96 +979,194 @@ function solveLinearSystemDense(A, b){
   return sol;
 }
 
-function elementLocalStiffness(E,A,I,L){
-  // TODO: Replace with 3D space frame stiffness using E, G, Ayz, Izz, Iyy, Jyz
-  // For now, return minimal placeholder
-  return Array.from({length:6}, ()=> new Float64Array(6));
+function elementLocalStiffness3D(E, G, Ayz, Izz, Iyy, Jyz, L){
+  // 3D space frame element stiffness in local coordinates
+  // 12 DOF: node i (ux, uy, uz, rx, ry, rz), node j (ux, uy, uz, rx, ry, rz)
+  // Local axis: x = along element, y and z are perpendicular
   
-  /* OLD 2D CODE - TO BE REPLACED WITH 3D SPACE FRAME (12x12)
-  const EA_L = (E*A)/L;
-  const EI = E*I;
-  const EI_L3 = EI/(L*L*L);
-  const EI_L2 = EI/(L*L);
-  const EI_L1 = EI/L;
-  return [
-    [ EA_L,      0,         0,     -EA_L,      0,         0 ],
-    [ 0,     12*EI_L3,  6*EI_L2,     0,    -12*EI_L3,  6*EI_L2 ],
-    [ 0,      6*EI_L2,  4*EI_L1,     0,     -6*EI_L2,  2*EI_L1 ],
-    [ -EA_L,     0,         0,      EA_L,      0,         0 ],
-    [ 0,    -12*EI_L3, -6*EI_L2,     0,     12*EI_L3, -6*EI_L2 ],
-    [ 0,      6*EI_L2,  2*EI_L1,     0,     -6*EI_L2,  4*EI_L1 ]
+  const EA_L = (E * Ayz) / L;
+  const GJ_L = (G * Jyz) / L;
+  
+  // Bending about local z-axis (EIyy)
+  const EIyy = E * Iyy;
+  const EIyy_L3 = EIyy / (L*L*L);
+  const EIyy_L2 = EIyy / (L*L);
+  const EIyy_L = EIyy / L;
+  
+  // Bending about local y-axis (EIzz)
+  const EIzz = E * Izz;
+  const EIzz_L3 = EIzz / (L*L*L);
+  const EIzz_L2 = EIzz / (L*L);
+  const EIzz_L = EIzz / L;
+  
+  // Initialize 12x12 matrix
+  const k = Array.from({length: 12}, () => new Float64Array(12));
+  
+  // Axial stiffness (DOF 0, 6)
+  k[0][0] = EA_L;    k[0][6] = -EA_L;
+  k[6][0] = -EA_L;   k[6][6] = EA_L;
+  
+  // Torsion (DOF 3, 9)
+  k[3][3] = GJ_L;    k[3][9] = -GJ_L;
+  k[9][3] = -GJ_L;   k[9][9] = GJ_L;
+  
+  // Bending in local x-y plane (y displacement, z rotation) - DOF 1, 5, 7, 11
+  k[1][1] = 12*EIzz_L3;   k[1][5] = 6*EIzz_L2;    k[1][7] = -12*EIzz_L3;  k[1][11] = 6*EIzz_L2;
+  k[5][1] = 6*EIzz_L2;    k[5][5] = 4*EIzz_L;     k[5][7] = -6*EIzz_L2;   k[5][11] = 2*EIzz_L;
+  k[7][1] = -12*EIzz_L3;  k[7][5] = -6*EIzz_L2;   k[7][7] = 12*EIzz_L3;   k[7][11] = -6*EIzz_L2;
+  k[11][1] = 6*EIzz_L2;   k[11][5] = 2*EIzz_L;    k[11][7] = -6*EIzz_L2;  k[11][11] = 4*EIzz_L;
+  
+  // Bending in local x-z plane (z displacement, y rotation) - DOF 2, 4, 8, 10
+  k[2][2] = 12*EIyy_L3;   k[2][4] = -6*EIyy_L2;   k[2][8] = -12*EIyy_L3;  k[2][10] = -6*EIyy_L2;
+  k[4][2] = -6*EIyy_L2;   k[4][4] = 4*EIyy_L;     k[4][8] = 6*EIyy_L2;    k[4][10] = 2*EIyy_L;
+  k[8][2] = -12*EIyy_L3;  k[8][4] = 6*EIyy_L2;    k[8][8] = 12*EIyy_L3;   k[8][10] = 6*EIyy_L2;
+  k[10][2] = -6*EIyy_L2;  k[10][4] = 2*EIyy_L;    k[10][8] = 6*EIyy_L2;   k[10][10] = 4*EIyy_L;
+  
+  return k;
+}
+
+function build3DTransformationMatrix(ni, nj, x3, y3, z3){
+  // Build 12x12 transformation matrix from local to global coordinates
+  // Local x-axis: from ni to nj
+  // Local y and z axes: defined by orientation point (x3, y3, z3)
+  
+  const dx = nj.x - ni.x;
+  const dy = nj.y - ni.y;
+  const dz = nj.z - ni.z;
+  const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  
+  if(L < 1e-10) throw new Error("Zero-length element");
+  
+  // Local x-axis (unit vector along element)
+  const xx = dx / L;
+  const xy = dy / L;
+  const xz = dz / L;
+  
+  // Vector from node i to orientation point
+  const vx = x3 - ni.x;
+  const vy = y3 - ni.y;
+  const vz = z3 - ni.z;
+  
+  // Project v onto local x-axis
+  const dot = vx*xx + vy*xy + vz*xz;
+  
+  // Component of v perpendicular to x-axis (in x-z local plane)
+  const vzx = vx - dot*xx;
+  const vzy = vy - dot*xy;
+  const vzz = vz - dot*xz;
+  
+  const vzLen = Math.sqrt(vzx*vzx + vzy*vzy + vzz*vzz);
+  
+  if(vzLen < 1e-10) throw new Error("Orientation point is collinear with element axis");
+  
+  // Local z-axis (unit vector)
+  const zx = vzx / vzLen;
+  const zy = vzy / vzLen;
+  const zz = vzz / vzLen;
+  
+  // Local y-axis: y = z × x (cross product)
+  const yx = zy*xz - zz*xy;
+  const yy = zz*xx - zx*xz;
+  const yz = zx*xy - zy*xx;
+  
+  // Build 3x3 rotation matrix
+  const R = [
+    [xx, xy, xz],
+    [yx, yy, yz],
+    [zx, zy, zz]
   ];
-  */
+  
+  // Build 12x12 transformation matrix (block diagonal)
+  const T = Array.from({length: 12}, () => new Float64Array(12));
+  
+  for(let block = 0; block < 4; block++){
+    const offset = block * 3;
+    for(let i = 0; i < 3; i++){
+      for(let j = 0; j < 3; j++){
+        T[offset + i][offset + j] = R[i][j];
+      }
+    }
+  }
+  
+  return T;
 }
 
 function solveStaticExpanded(expanded){
-  // TEMPORARY: Still uses 2D formulation (3 DOF per node)
-  // TODO: Update to full 3D space frame (6 DOF per node)
+  // Full 3D space frame solver with 6 DOF per node
   const N = expanded.nodes.length;
-  const ndof = 3*N;
+  const ndof = 6*N; // 6 DOF per node (ux, uy, uz, rx, ry, rz)
 
   const K = Array.from({length: ndof}, ()=> new Float64Array(ndof));
   const F = new Float64Array(ndof);
   const U = new Float64Array(ndof);
 
+  // Apply loads (6 DOF per node)
   for(let i=0;i<N;i++){
     const n = expanded.nodes[i];
-    F[3*i+0] += n.loads.fx;
-    F[3*i+1] += n.loads.fy;
-    // F[3*i+2] would be moment mz (not implemented yet)
+    F[6*i+0] += n.loads.fx;
+    F[6*i+1] += n.loads.fy;
+    F[6*i+2] += n.loads.fz;
+    // Moment loads would go in F[6*i+3], F[6*i+4], F[6*i+5]
   }
 
+  // Assemble global stiffness matrix
   for(const e of expanded.elems){
     const n1 = expanded.nodes[e.ni];
     const n2 = expanded.nodes[e.nj];
-    const dx = n2.x-n1.x, dy = n2.y-n1.y;
-    const L = Math.hypot(dx,dy);
+    const dx = n2.x-n1.x, dy = n2.y-n1.y, dz = n2.z-n1.z;
+    const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
     if(!(L>0)) throw new Error("Zero-length element detected in expanded mesh.");
-    const c = dx/L, s = dy/L;
-
-    const k = elementLocalStiffness(e.E,e.A,e.I,L);
-
-    const T = [
-      [  c,  s, 0,  0, 0, 0 ],
-      [ -s,  c, 0,  0, 0, 0 ],
-      [  0,  0, 1,  0, 0, 0 ],
-      [  0,  0, 0,  c, s, 0 ],
-      [  0,  0, 0, -s, c, 0 ],
-      [  0,  0, 0,  0, 0, 1 ]
-    ];
-
-    const tmp = Array.from({length:6}, ()=> new Float64Array(6));
-    for(let i=0;i<6;i++){
-      for(let j=0;j<6;j++){
+    
+    // Local stiffness matrix (12x12)
+    const kLocal = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
+    
+    // Transformation matrix (12x12)
+    const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
+    
+    // Transform to global: kg = T^T * kLocal * T
+    // First: tmp = kLocal * T
+    const tmp = Array.from({length:12}, ()=> new Float64Array(12));
+    for(let i=0;i<12;i++){
+      for(let j=0;j<12;j++){
         let sum = 0;
-        for(let m=0;m<6;m++) sum += k[i][m] * T[m][j];
+        for(let m=0;m<12;m++) sum += kLocal[i][m] * T[m][j];
         tmp[i][j] = sum;
       }
     }
-    const kg = Array.from({length:6}, ()=> new Float64Array(6));
-    for(let i=0;i<6;i++){
-      for(let j=0;j<6;j++){
+    
+    // Second: kg = T^T * tmp
+    const kg = Array.from({length:12}, ()=> new Float64Array(12));
+    for(let i=0;i<12;i++){
+      for(let j=0;j<12;j++){
         let sum = 0;
-        for(let m=0;m<6;m++) sum += T[m][i] * tmp[m][j];
+        for(let m=0;m<12;m++) sum += T[m][i] * tmp[m][j];
         kg[i][j] = sum;
       }
     }
 
-    const dofs = [3*e.ni+0,3*e.ni+1,3*e.ni+2,3*e.nj+0,3*e.nj+1,3*e.nj+2];
-    for(let a=0;a<6;a++){
+    // Assemble into global K
+    const dofs = [
+      6*e.ni+0, 6*e.ni+1, 6*e.ni+2, 6*e.ni+3, 6*e.ni+4, 6*e.ni+5,
+      6*e.nj+0, 6*e.nj+1, 6*e.nj+2, 6*e.nj+3, 6*e.nj+4, 6*e.nj+5
+    ];
+    for(let a=0;a<12;a++){
       const Irow = dofs[a];
       const Krow = K[Irow];
-      for(let b=0;b<6;b++) Krow[dofs[b]] += kg[a][b];
+      for(let b=0;b<12;b++) Krow[dofs[b]] += kg[a][b];
     }
   }
 
+  // Apply boundary conditions (6 DOF per node)
   const fixed=[], fixedVal=[], free=[];
   for(let i=0;i<N;i++){
     const bc = expanded.nodes[i].bc;
-    const d0=3*i+0, d1=3*i+1, d2=3*i+2;
+    const d0=6*i+0, d1=6*i+1, d2=6*i+2, d3=6*i+3, d4=6*i+4, d5=6*i+5;
     if(bc.ux.prescribed){ fixed.push(d0); fixedVal.push(bc.ux.value); } else free.push(d0);
     if(bc.uy.prescribed){ fixed.push(d1); fixedVal.push(bc.uy.value); } else free.push(d1);
-    if(bc.rz.prescribed){ fixed.push(d2); fixedVal.push(bc.rz.value); } else free.push(d2);
+    if(bc.uz.prescribed){ fixed.push(d2); fixedVal.push(bc.uz.value); } else free.push(d2);
+    if(bc.rx.prescribed){ fixed.push(d3); fixedVal.push(bc.rx.value); } else free.push(d3);
+    if(bc.ry.prescribed){ fixed.push(d4); fixedVal.push(bc.ry.value); } else free.push(d4);
+    if(bc.rz.prescribed){ fixed.push(d5); fixedVal.push(bc.rz.value); } else free.push(d5);
   }
   if(free.length===0) throw new Error("All DOFs are prescribed; nothing to solve.");
 
@@ -1022,23 +1189,22 @@ function solveStaticExpanded(expanded){
       Kff[a][b]=K[I][J];
     }
   }
+  
   const Uf=solveLinearSystemDense(Kff,Rf);
 
   for(let b=0;b<nC;b++) U[fixed[b]]=fixedVal[b];
   for(let a=0;a<nF;a++) U[free[a]]=Uf[a];
 
-  return { U, F, meta:{N,ndof,nFree:nF,nFixed:nC} };
+  return { U, F, K, meta:{N,ndof,nFree:nF,nFixed:nC} };
 }
 
 function summarizeDisplacements(expanded, U){
   let maxMag = { val:-Infinity, label:"" };
   let minMag = { val:+Infinity, label:"" };
   for(let i=0;i<expanded.nodes.length;i++){
-    // TEMPORARY: Still reading from 3-DOF layout (ux, uy, _)
-    // TODO: Update to 6-DOF layout when solver is upgraded
-    const ux = U[3*i+0], uy = U[3*i+1];
-    // const uz = U[3*i+2]; // Will be displacement when using 6-DOF
-    const mag = Math.hypot(ux,uy); // Should be Math.hypot(ux,uy,uz) in full 3D
+    // Read from 6-DOF layout
+    const ux = U[6*i+0], uy = U[6*i+1], uz = U[6*i+2];
+    const mag = Math.hypot(ux, uy, uz);
     const lab = expanded.nodes[i].label || `idx${i}`;
     if(mag > maxMag.val) maxMag = { val:mag, label:lab };
     if(mag < minMag.val) minMag = { val:mag, label:lab };
@@ -1047,70 +1213,580 @@ function summarizeDisplacements(expanded, U){
 }
 
 function elementEndForcesLocal(expanded, e, U){
-  // TODO: Implement 3D element force recovery
-  // For now, return placeholder
-  return { fL: new Float64Array(12) }; // 12 DOF for 3D beam (6 per node)
-  
-  /* OLD 2D CODE - TO BE REPLACED
+  // Recover element end forces in local coordinates
   const n1 = expanded.nodes[e.ni];
   const n2 = expanded.nodes[e.nj];
-  const dx = n2.x-n1.x, dy = n2.y-n1.y;
-  const L = Math.hypot(dx,dy);
-  const c = dx/L, s = dy/L;
+  const dx = n2.x-n1.x, dy = n2.y-n1.y, dz = n2.z-n1.z;
+  const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
 
-  const uG = new Float64Array(6);
-  uG[0]=U[3*e.ni+0]; uG[1]=U[3*e.ni+1]; uG[2]=U[3*e.ni+2];
-  uG[3]=U[3*e.nj+0]; uG[4]=U[3*e.nj+1]; uG[5]=U[3*e.nj+2];
-
-  const uL = new Float64Array(6);
-  uL[0]= c*uG[0] + s*uG[1];
-  uL[1]=-s*uG[0] + c*uG[1];
-  uL[2]= uG[2];
-  uL[3]= c*uG[3] + s*uG[4];
-  uL[4]=-s*uG[3] + c*uG[4];
-  uL[5]= uG[5];
-
-  const kL = elementLocalStiffness(e.E,e.A,e.I,L);
-  const fL = new Float64Array(6);
-  for(let i=0;i<6;i++){
-    let sum=0;
-    for(let j=0;j<6;j++) sum += kL[i][j]*uL[j];
-    fL[i]=sum;
+  // Get global displacements (12 DOF)
+  const uG = new Float64Array(12);
+  for(let i=0; i<6; i++){
+    uG[i] = U[6*e.ni + i];
+    uG[i+6] = U[6*e.nj + i];
   }
-  return { fL };
-  */
+
+  // Transform to local coordinates
+  const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
+  const uL = new Float64Array(12);
+  for(let i=0; i<12; i++){
+    let sum = 0;
+    for(let j=0; j<12; j++){
+      sum += T[j][i] * uG[j];
+    }
+    uL[i] = sum;
+  }
+
+  // Compute local forces: fL = kL * uL
+  const kL = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
+  const fL = new Float64Array(12);
+  for(let i=0; i<12; i++){
+    let sum = 0;
+    for(let j=0; j<12; j++){
+      sum += kL[i][j] * uL[j];
+    }
+    fL[i] = sum;
+  }
+  
+  return { fL, L };
+}
+
+function calculateElementStresses(expanded, elemIndex, U){
+  // Calculate stresses at a specific point along an expanded element
+  // This function is called for each subsegment to build the stress profile
+  const e = expanded.elems[elemIndex];
+  const {fL, L} = elementEndForcesLocal(expanded, e, U);
+  
+  // Extract end forces (local coordinates)
+  // Node i: [Fx_i, Fy_i, Fz_i, Mx_i, My_i, Mz_i]
+  // Node j: [Fx_j, Fy_j, Fz_j, Mx_j, My_j, Mz_j]
+  const forces = {
+    i: {
+      Fx: fL[0], Fy: fL[1], Fz: fL[2],
+      Mx: fL[3], My: fL[4], Mz: fL[5]
+    },
+    j: {
+      Fx: fL[6], Fy: fL[7], Fz: fL[8],
+      Mx: fL[9], My: fL[10], Mz: fL[11]
+    }
+  };
+  
+  // AXIAL STRESS - CONSTANT along element (no distributed load)
+  // Using node i value (should equal -node j value for equilibrium)
+  const N = fL[0]; // Axial force (tension positive)
+  const sigma_axial = N / e.Ayz;
+  
+  // SHEAR FORCES - CONSTANT along element (no distributed load)
+  // Using node i values
+  const Vy = fL[1]; // Shear force in local y
+  const Vz = fL[2]; // Shear force in local z
+  
+  // Average shear stress (simplified - could use shape factor for more accuracy)
+  const tau_y = Math.abs(Vy) / e.Ayz;
+  const tau_z = Math.abs(Vz) / e.Ayz;
+  const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
+  
+  // TORSION - CONSTANT along element
+  const Mx = fL[3]; // Torsional moment
+  // Approximate distance to extreme fiber for torsion
+  const c_torsion = Math.sqrt(Math.max(e.Iyy, e.Izz) / e.Ayz);
+  const tau_torsion = Math.abs(Mx) * c_torsion / e.Jyz;
+  
+  // BENDING MOMENTS - These are the values AT NODE i
+  // For stress variation along element, caller must interpolate
+  const My_i = fL[4]; // Moment about local y-axis at node i
+  const Mz_i = fL[5]; // Moment about local z-axis at node i
+  const My_j = fL[10]; // Moment about local y-axis at node j
+  const Mz_j = fL[11]; // Moment about local z-axis at node j
+  
+  // Estimate distance to extreme fiber (rectangular section assumption)
+  // For more accuracy, would need actual section dimensions
+  const c_y = Math.sqrt(e.Iyy / e.Ayz); // Distance in y-direction
+  const c_z = Math.sqrt(e.Izz / e.Ayz); // Distance in z-direction
+  
+  // Bending stresses at node i
+  const sigma_bend_y_i = Math.abs(My_i) * c_z / e.Izz;
+  const sigma_bend_z_i = Math.abs(Mz_i) * c_y / e.Iyy;
+  
+  // Bending stresses at node j
+  const sigma_bend_y_j = Math.abs(My_j) * c_z / e.Izz;
+  const sigma_bend_z_j = Math.abs(Mz_j) * c_y / e.Iyy;
+  
+  // Combined stresses at node i (extreme fibers)
+  const sigma_max_i = sigma_axial + sigma_bend_y_i + sigma_bend_z_i;
+  const sigma_min_i = sigma_axial - sigma_bend_y_i - sigma_bend_z_i;
+  
+  // Combined stresses at node j
+  const sigma_max_j = sigma_axial + sigma_bend_y_j + sigma_bend_z_j;
+  const sigma_min_j = sigma_axial - sigma_bend_y_j - sigma_bend_z_j;
+  
+  return {
+    forces,
+    moments: {
+      My_i, Mz_i, My_j, Mz_j
+    },
+    stresses: {
+      axial: sigma_axial,           // CONSTANT
+      shear: tau_shear,             // CONSTANT
+      torsion: tau_torsion,         // CONSTANT
+      bending_i: { 
+        My: sigma_bend_y_i,         // At node i
+        Mz: sigma_bend_z_i 
+      },
+      bending_j: { 
+        My: sigma_bend_y_j,         // At node j
+        Mz: sigma_bend_z_j 
+      },
+      combined_max_i: sigma_max_i,  // At node i
+      combined_min_i: sigma_min_i,
+      combined_max_j: sigma_max_j,  // At node j
+      combined_min_j: sigma_min_j
+    },
+    length: L,
+    sectionProperties: { c_y, c_z, Ayz: e.Ayz, Izz: e.Izz, Iyy: e.Iyy }
+  };
 }
 
 function summarizeStresses(expanded, U){
-  // TODO: Implement 3D stress calculation using Ayz, Izz, Iyy, Jyz
-  // For now, return placeholder values
-  return { 
-    maxSig: { val: 0, at: "N/A (pending 3D implementation)" }, 
-    minSig: { val: 0, at: "N/A (pending 3D implementation)" } 
-  };
-  
-  /* OLD 2D CODE - TO BE REPLACED
+  // Summary of max/min stresses across all elements
   let maxSig = { val:-Infinity, at:"" };
   let minSig = { val:+Infinity, at:"" };
-  for(const e of expanded.elems){
-    const {fL} = elementEndForcesLocal(expanded, e, U);
-    const N1 = fL[0];
-    const N2 = -fL[3];
-    const N = 0.5*(N1+N2);
-    const M1 = fL[2], M2 = fL[5];
-    const Mabs = Math.max(Math.abs(M1), Math.abs(M2));
-    const sigAx = N / e.A;
-    const sigB = (e.S>0) ? (Mabs / e.S) : 0;
-    const sigTop = sigAx + sigB;
-    const sigBot = sigAx - sigB;
-    const localMax = Math.max(sigTop, sigBot);
-    const localMin = Math.min(sigTop, sigBot);
+  
+  for(let i=0; i<expanded.elems.length; i++){
+    const result = calculateElementStresses(expanded, i, U);
+    const e = expanded.elems[i];
+    
+    const localMax = Math.max(
+      result.stresses.combined_max_i,
+      result.stresses.combined_max_j
+    );
+    const localMin = Math.min(
+      result.stresses.combined_min_i,
+      result.stresses.combined_min_j
+    );
+    
     const where = `seg ${e.primaryElemId}, sub ${e.subIndex}`;
     if(localMax > maxSig.val) maxSig = { val:localMax, at:where };
     if(localMin < minSig.val) minSig = { val:localMin, at:where };
   }
+  
   return { maxSig, minSig };
-  */
+}
+
+function verifyElementForces(elemId){
+  // Diagnostic function to verify internal forces are consistent across subsegments
+  if(!Model.lastSolution) return null;
+  
+  const subElems = Model.lastSolution.expanded.elems.filter(e => e.primaryElemId === elemId);
+  if(subElems.length === 0) return null;
+  
+  const forceData = [];
+  
+  for(let i = 0; i < subElems.length; i++){
+    const e = subElems[i];
+    const elemIdx = Model.lastSolution.expanded.elems.indexOf(e);
+    const {fL} = elementEndForcesLocal(Model.lastSolution.expanded, elemIdx, Model.lastSolution.U);
+    
+    forceData.push({
+      subseg: i + 1,
+      Fx_i: fL[0],  // Axial force at node i
+      Fx_j: fL[6],  // Axial force at node j (should be -Fx_i)
+      Fy_i: fL[1],  // Shear y at node i
+      Fy_j: fL[7],  // Shear y at node j (should be -Fy_i)
+      Fz_i: fL[2],  // Shear z at node i
+      Fz_j: fL[8],  // Shear z at node j (should be -Fz_i)
+      Mx_i: fL[3],  // Torsion at node i
+      Mx_j: fL[9],  // Torsion at node j (should be -Mx_i)
+      My_i: fL[4],  // Moment y at node i
+      My_j: fL[10], // Moment y at node j
+      Mz_i: fL[5],  // Moment z at node i
+      Mz_j: fL[11]  // Moment z at node j
+    });
+  }
+  
+  // Check consistency
+  const axialValues = forceData.map(d => d.Fx_i);
+  const shearYValues = forceData.map(d => d.Fy_i);
+  const shearZValues = forceData.map(d => d.Fz_i);
+  const torsionValues = forceData.map(d => d.Mx_i);
+  
+  const axialRange = Math.max(...axialValues) - Math.min(...axialValues);
+  const shearYRange = Math.max(...shearYValues) - Math.min(...shearYValues);
+  const shearZRange = Math.max(...shearZValues) - Math.min(...shearZValues);
+  const torsionRange = Math.max(...torsionValues) - Math.min(...torsionValues);
+  
+  return {
+    forceData,
+    consistency: {
+      axial: { range: axialRange, isConstant: axialRange < 1e-3 },
+      shearY: { range: shearYRange, isConstant: shearYRange < 1e-3 },
+      shearZ: { range: shearZRange, isConstant: shearZRange < 1e-3 },
+      torsion: { range: torsionRange, isConstant: torsionRange < 1e-3 }
+    }
+  };
+}
+
+function displayElementAnalysis(elemId, viewMode){
+  // Display analysis for a primary segment with selectable view modes
+  if(!Model.lastSolution){
+    el.stressContent.innerHTML = '<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">Run Static Solve first to analyze stresses.</div>';
+    el.stressViewSelector.disabled = true;
+    return;
+  }
+  
+  const elem = Model.elemById.get(elemId);
+  if(!elem){
+    el.stressContent.innerHTML = '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">Element not found.</div>';
+    el.stressViewSelector.disabled = true;
+    return;
+  }
+  
+  // Enable view selector
+  el.stressViewSelector.disabled = false;
+  
+  // Find all expanded sub-elements for this primary element
+  const subElems = Model.lastSolution.expanded.elems.filter(e => e.primaryElemId === elemId);
+  
+  if(subElems.length === 0){
+    el.stressContent.innerHTML = '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">No subsegments found.</div>';
+    return;
+  }
+  
+  // CRITICAL FIX v2.1:
+  // We need to fetch data from the START of the first subsegment and the END of the last subsegment.
+  const firstSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[0]);
+  const lastSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[subElems.length-1]);
+  
+  // Forces at Start of Beam (from First Subsegment Node i)
+  const forcesStart = calculateElementStresses(Model.lastSolution.expanded, firstSubElemIdx, Model.lastSolution.U);
+  
+  // Forces at End of Beam (from Last Subsegment Node j)
+  const forcesEnd = calculateElementStresses(Model.lastSolution.expanded, lastSubElemIdx, Model.lastSolution.U);
+  
+  // Get primary element properties
+  const ni_primary = Model.nodeById.get(elem.ni);
+  const nj_primary = Model.nodeById.get(elem.nj);
+  const dx = nj_primary.x - ni_primary.x;
+  const dy = nj_primary.y - ni_primary.y;
+  const dz = nj_primary.z - ni_primary.z;
+  const L_primary = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  
+  // Extract CONSTANT internal forces (these don't change along element)
+  const N = forcesStart.forces.i.Fx;  // Axial force - CONSTANT
+  const Vy = forcesStart.forces.i.Fy; // Shear y - CONSTANT
+  const Vz = forcesStart.forces.i.Fz; // Shear z - CONSTANT
+  const Mx = forcesStart.forces.i.Mx; // Torsion - CONSTANT
+  
+  // Extract end moments (Linearly Interpolated between Start and End of Beam)
+  const My_start = forcesStart.forces.i.My;
+  const Mz_start = forcesStart.forces.i.Mz;
+  const My_end = forcesEnd.forces.j.My; // Taking force from node j of last segment
+  const Mz_end = forcesEnd.forces.j.Mz; // Taking force from node j of last segment
+  
+  // Section properties (from primary element)
+  const Ayz = elem.Ayz;
+  const Izz = elem.Izz;
+  const Iyy = elem.Iyy;
+  const Jyz = elem.Jyz;
+  const c_y = forcesStart.sectionProperties.c_y;
+  const c_z = forcesStart.sectionProperties.c_z;
+  
+  // CONSTANT stresses (independent of position)
+  const sigma_axial = N / Ayz;
+  const tau_y = Math.abs(Vy) / Ayz;
+  const tau_z = Math.abs(Vz) / Ayz;
+  const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
+  const c_torsion = Math.sqrt(Math.max(Iyy, Izz) / Ayz);
+  const tau_torsion = Math.abs(Mx) * c_torsion / Jyz;
+  
+  // Build stress profile at different positions along element
+  const numPoints = 11; // Calculate at 0%, 10%, 20%, ..., 100%
+  const stressProfile = [];
+  
+  for(let i = 0; i < numPoints; i++){
+    const xi = i / (numPoints - 1); // Position from 0 to 1
+    
+    // Linearly interpolate moments over TOTAL length
+    const My_xi = My_start + xi * (My_end - My_start);
+    const Mz_xi = Mz_start + xi * (Mz_end - Mz_start);
+    
+    // Bending stresses at this position
+    const sigma_bend_My = Math.abs(My_xi) * c_z / Izz;
+    const sigma_bend_Mz = Math.abs(Mz_xi) * c_y / Iyy;
+    
+    // Combined stresses (extreme fibers)
+    const sigma_max = sigma_axial + sigma_bend_My + sigma_bend_Mz;
+    const sigma_min = sigma_axial - sigma_bend_My - sigma_bend_Mz;
+    
+    stressProfile.push({
+      position: xi,
+      My: My_xi,
+      Mz: Mz_xi,
+      sigma_axial: sigma_axial,       // CONSTANT
+      sigma_bend_My: sigma_bend_My,
+      sigma_bend_Mz: sigma_bend_Mz,
+      sigma_max: sigma_max,
+      sigma_min: sigma_min,
+      tau_shear: tau_shear,           // CONSTANT
+      tau_torsion: tau_torsion        // CONSTANT
+    });
+  }
+  
+  // Get the mode to display
+  const mode = viewMode || el.stressViewSelector.value;
+  
+  let html = `<div class="stressLabel">Segment ${elemId}: Node ${elem.ni} → ${elem.nj}</div>`;
+  html += `<div class="stressValue" style="margin-bottom:10px;">Length: ${L_primary.toFixed(2)}</div>`;
+  
+  if(mode === 'table'){
+    html += buildStressTableCorrected(stressProfile);
+  } else if(mode === 'moment'){
+    html += buildMomentDiagramsCorrected(stressProfile, elem);
+  } else if(mode === 'shear'){
+    html += buildShearDiagramsCorrected(Vy, Vz);
+  } else if(mode === 'combined'){
+    html += buildCombinedStressDiagramCorrected(stressProfile, elem);
+  }
+  
+  el.stressContent.innerHTML = html;
+}
+
+function buildStressTableCorrected(stressProfile){
+  // Table with corrected constant/varying values
+  
+  let html = '<table class="stressTable"><thead><tr>';
+  html += '<th>Position</th><th>Axial*<br>(σ)</th><th>Bend My<br>(σ)</th><th>Bend Mz<br>(σ)</th>';
+  html += '<th>Combined<br>Max (σ)</th><th>Combined<br>Min (σ)</th><th>Shear*<br>(τ)</th><th>Torsion*<br>(τ)</th>';
+  html += '</tr></thead><tbody>';
+  
+  stressProfile.forEach((sp) => {
+    const posPercent = (sp.position * 100).toFixed(0);
+    
+    html += '<tr>';
+    html += `<td>${posPercent}%</td>`;
+    html += `<td>${sp.sigma_axial.toFixed(2)}</td>`;
+    html += `<td>${sp.sigma_bend_My.toFixed(2)}</td>`;
+    html += `<td>${sp.sigma_bend_Mz.toFixed(2)}</td>`;
+    html += `<td>${sp.sigma_max.toFixed(2)}</td>`;
+    html += `<td>${sp.sigma_min.toFixed(2)}</td>`;
+    html += `<td>${sp.tau_shear.toFixed(2)}</td>`;
+    html += `<td>${sp.tau_torsion.toFixed(2)}</td>`;
+    html += '</tr>';
+  });
+  
+  html += '</tbody></table>';
+  
+  // Summary
+  const sigma_axial = stressProfile[0].sigma_axial;
+  const tau_shear = stressProfile[0].tau_shear;
+  const tau_torsion = stressProfile[0].tau_torsion;
+  const maxCombined = Math.max(...stressProfile.map(sp => sp.sigma_max));
+  const minCombined = Math.min(...stressProfile.map(sp => sp.sigma_min));
+  
+  html += '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line); font-size:11px;">';
+  html += '<div class="stressLabel">Summary (* = constant values):</div>';
+  html += `<div class="stressValue">Axial*: ${sigma_axial.toFixed(2)} | Shear*: ${tau_shear.toFixed(2)} | Torsion*: ${tau_torsion.toFixed(2)}</div>`;
+  html += `<div class="stressValue">Combined Envelope: Max=${maxCombined.toFixed(2)}, Min=${minCombined.toFixed(2)}</div>`;
+  html += '</div>';
+  
+  // DIAGNOSTIC: Verify subsegment forces if available
+  if(View.selectedSegmentForAnalysis !== null){
+    const verification = verifyElementForces(View.selectedSegmentForAnalysis);
+    if(verification && !verification.consistency.axial.isConstant){
+      html += '<div style="margin-top:8px; padding:8px; background:#fee; border:1px solid #fcc; border-radius:4px; font-size:10px;">';
+      html += '<strong>⚠️ SOLVER ERROR DETECTED:</strong><br>';
+      html += `Axial force varies by ${verification.consistency.axial.range.toFixed(2)} across subsegments.<br>`;
+      html += `This violates equilibrium and indicates a bug in the solver or force recovery.<br>`;
+      html += '<button onclick="console.log(verifyElementForces(' + View.selectedSegmentForAnalysis + '))" style="margin-top:4px; padding:2px 6px; font-size:10px;">Log Details to Console</button>';
+      html += '</div>';
+    }
+  }
+  
+  return html;
+}
+
+function buildMomentDiagramsCorrected(stressProfile, elem){
+  // Plot My and Mz along element length
+  const width = el.stressContent.clientWidth - 40;
+  const height = 200;
+  const margin = {top: 20, right: 60, bottom: 40, left: 60};
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  
+  // Extract moment data
+  const positions = stressProfile.map(sp => sp.position);
+  const My_values = stressProfile.map(sp => sp.My);
+  const Mz_values = stressProfile.map(sp => sp.Mz);
+  
+  const My_max = Math.max(...My_values.map(Math.abs));
+  const Mz_max = Math.max(...Mz_values.map(Math.abs));
+  const M_max = Math.max(My_max, Mz_max) || 1;
+  
+  let html = '<div style="margin-bottom:10px; font-size:11px;">';
+  html += '<div class="stressLabel">Bending Moment Diagrams (Local Coordinates)</div>';
+  html += '<div class="stressValue">My = moment about local y-axis (causes bending in x-z plane)</div>';
+  html += '<div class="stressValue">Mz = moment about local z-axis (causes bending in x-y plane)</div>';
+  html += '</div>';
+  
+  html += `<svg width="${width}" height="${height}" style="border:1px solid var(--line); background:#fff;">`;
+  
+  const yScale = plotHeight / 2 / M_max;
+  const yZero = margin.top + plotHeight / 2;
+  
+  // Axes
+  html += `<line x1="${margin.left}" y1="${yZero}" x2="${margin.left + plotWidth}" y2="${yZero}" stroke="#ccc" stroke-width="1"/>`;
+  html += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#666" stroke-width="1"/>`;
+  
+  // Plot My line
+  let pathMy = `M ${margin.left} ${yZero - My_values[0] * yScale}`;
+  for(let i = 1; i < positions.length; i++){
+    const x = margin.left + positions[i] * plotWidth;
+    const y = yZero - My_values[i] * yScale;
+    pathMy += ` L ${x} ${y}`;
+  }
+  html += `<path d="${pathMy}" fill="none" stroke="#dc2626" stroke-width="2"/>`;
+  
+  // Plot Mz line
+  let pathMz = `M ${margin.left} ${yZero - Mz_values[0] * yScale}`;
+  for(let i = 1; i < positions.length; i++){
+    const x = margin.left + positions[i] * plotWidth;
+    const y = yZero - Mz_values[i] * yScale;
+    pathMz += ` L ${x} ${y}`;
+  }
+  html += `<path d="${pathMz}" fill="none" stroke="#2563eb" stroke-width="2"/>`;
+  
+  // Labels
+  html += `<text x="${margin.left + plotWidth/2}" y="${height - 5}" text-anchor="middle" font-size="11" fill="#666">Position along element</text>`;
+  html += `<text x="${15}" y="${margin.top + plotHeight/2}" text-anchor="middle" font-size="11" fill="#666" transform="rotate(-90, 15, ${margin.top + plotHeight/2})">Moment</text>`;
+  
+  // Legend
+  html += `<line x1="${width - 150}" y1="${margin.top + 10}" x2="${width - 130}" y2="${margin.top + 10}" stroke="#dc2626" stroke-width="2"/>`;
+  html += `<text x="${width - 125}" y="${margin.top + 14}" font-size="10" fill="#666">My</text>`;
+  html += `<line x1="${width - 150}" y1="${margin.top + 25}" x2="${width - 130}" y2="${margin.top + 25}" stroke="#2563eb" stroke-width="2"/>`;
+  html += `<text x="${width - 125}" y="${margin.top + 29}" font-size="10" fill="#666">Mz</text>`;
+  
+  html += '</svg>';
+  
+  // Values
+  html += '<div style="margin-top:8px; font-size:11px;">';
+  html += `<div class="stressValue">My range: ${Math.min(...My_values).toFixed(1)} to ${Math.max(...My_values).toFixed(1)}</div>`;
+  html += `<div class="stressValue">Mz range: ${Math.min(...Mz_values).toFixed(1)} to ${Math.max(...Mz_values).toFixed(1)}</div>`;
+  html += '</div>';
+  
+  return html;
+}
+
+function buildShearDiagramsCorrected(Vy, Vz){
+  // Plot constant shear forces
+  const width = el.stressContent.clientWidth - 40;
+  const height = 150;
+  const margin = {top: 20, right: 60, bottom: 40, left: 60};
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  
+  let html = '<div style="margin-bottom:10px; font-size:11px;">';
+  html += '<div class="stressLabel">Shear Force Diagrams (Local Coordinates)</div>';
+  html += '<div class="stressValue">Vy and Vz are CONSTANT (no distributed load)</div>';
+  html += '</div>';
+  
+  html += `<svg width="${width}" height="${height}" style="border:1px solid var(--line); background:#fff;">`;
+  
+  const V_max = Math.max(Math.abs(Vy), Math.abs(Vz)) || 1;
+  const yScale = plotHeight / 2 / V_max;
+  const yZero = margin.top + plotHeight / 2;
+  
+  // Axes
+  html += `<line x1="${margin.left}" y1="${yZero}" x2="${margin.left + plotWidth}" y2="${yZero}" stroke="#ccc" stroke-width="1"/>`;
+  html += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#666" stroke-width="1"/>`;
+  
+  // Constant Vy line
+  const yVy = yZero - Vy * yScale;
+  html += `<line x1="${margin.left}" y1="${yVy}" x2="${margin.left + plotWidth}" y2="${yVy}" stroke="#dc2626" stroke-width="2"/>`;
+  
+  // Constant Vz line
+  const yVz = yZero - Vz * yScale;
+  html += `<line x1="${margin.left}" y1="${yVz}" x2="${margin.left + plotWidth}" y2="${yVz}" stroke="#2563eb" stroke-width="2"/>`;
+  
+  // Labels
+  html += `<text x="${margin.left + plotWidth/2}" y="${height - 5}" text-anchor="middle" font-size="11" fill="#666">Position along element</text>`;
+  html += `<text x="${15}" y="${margin.top + plotHeight/2}" text-anchor="middle" font-size="11" fill="#666" transform="rotate(-90, 15, ${margin.top + plotHeight/2})">Shear Force</text>`;
+  
+  // Legend
+  html += `<line x1="${width - 150}" y1="${margin.top + 10}" x2="${width - 130}" y2="${margin.top + 10}" stroke="#dc2626" stroke-width="2"/>`;
+  html += `<text x="${width - 125}" y="${margin.top + 14}" font-size="10" fill="#666">Vy = ${Vy.toFixed(2)}</text>`;
+  html += `<line x1="${width - 150}" y1="${margin.top + 25}" x2="${width - 130}" y2="${margin.top + 25}" stroke="#2563eb" stroke-width="2"/>`;
+  html += `<text x="${width - 125}" y="${margin.top + 29}" font-size="10" fill="#666">Vz = ${Vz.toFixed(2)}</text>`;
+  
+  html += '</svg>';
+  
+  return html;
+}
+
+function buildCombinedStressDiagramCorrected(stressProfile, elem){
+  // Plot combined max and min stress along element
+  const width = el.stressContent.clientWidth - 40;
+  const height = 200;
+  const margin = {top: 20, right: 60, bottom: 40, left: 60};
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  
+  const positions = stressProfile.map(sp => sp.position);
+  const maxStress = stressProfile.map(sp => sp.sigma_max);
+  const minStress = stressProfile.map(sp => sp.sigma_min);
+  
+  const globalMax = Math.max(...maxStress);
+  const globalMin = Math.min(...minStress);
+  const range = Math.max(Math.abs(globalMax), Math.abs(globalMin)) || 1;
+  
+  let html = '<div style="margin-bottom:10px; font-size:11px;">';
+  html += '<div class="stressLabel">Combined Normal Stress Envelope</div>';
+  html += '<div class="stressValue">σ = σ_axial + σ_bending (at extreme fibers)</div>';
+  html += '</div>';
+  
+  html += `<svg width="${width}" height="${height}" style="border:1px solid var(--line); background:#fff;">`;
+  
+  const yScale = plotHeight / 2 / range;
+  const yZero = margin.top + plotHeight / 2;
+  
+  // Axes
+  html += `<line x1="${margin.left}" y1="${yZero}" x2="${margin.left + plotWidth}" y2="${yZero}" stroke="#ccc" stroke-width="1"/>`;
+  html += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#666" stroke-width="1"/>`;
+  
+  // Plot max stress (upper envelope)
+  let pathMax = `M ${margin.left} ${yZero - maxStress[0] * yScale}`;
+  for(let i = 1; i < positions.length; i++){
+    const x = margin.left + positions[i] * plotWidth;
+    const y = yZero - maxStress[i] * yScale;
+    pathMax += ` L ${x} ${y}`;
+  }
+  html += `<path d="${pathMax}" fill="none" stroke="#dc2626" stroke-width="2"/>`;
+  
+  // Plot min stress (lower envelope)
+  let pathMin = `M ${margin.left} ${yZero - minStress[0] * yScale}`;
+  for(let i = 1; i < positions.length; i++){
+    const x = margin.left + positions[i] * plotWidth;
+    const y = yZero - minStress[i] * yScale;
+    pathMin += ` L ${x} ${y}`;
+  }
+  html += `<path d="${pathMin}" fill="none" stroke="#2563eb" stroke-width="2"/>`;
+  
+  // Fill between curves
+  const fillPath = pathMax + ' ' + pathMin.split(' ').reverse().join(' ') + ' Z';
+  html += `<path d="${fillPath}" fill="rgba(147, 51, 234, 0.1)" stroke="none"/>`;
+  
+  // Labels
+  html += `<text x="${margin.left + plotWidth/2}" y="${height - 5}" text-anchor="middle" font-size="11" fill="#666">Position along element</text>`;
+  html += `<text x="${15}" y="${margin.top + plotHeight/2}" text-anchor="middle" font-size="11" fill="#666" transform="rotate(-90, 15, ${margin.top + plotHeight/2})">Stress (σ)</text>`;
+  
+  // Legend
+  html += `<line x1="${width - 180}" y1="${margin.top + 10}" x2="${width - 160}" y2="${margin.top + 10}" stroke="#dc2626" stroke-width="2"/>`;
+  html += `<text x="${width - 155}" y="${margin.top + 14}" font-size="10" fill="#666">Max = ${globalMax.toFixed(2)}</text>`;
+  html += `<line x1="${width - 180}" y1="${margin.top + 25}" x2="${width - 160}" y2="${margin.top + 25}" stroke="#2563eb" stroke-width="2"/>`;
+  html += `<text x="${width - 155}" y="${margin.top + 29}" font-size="10" fill="#666">Min = ${globalMin.toFixed(2)}</text>`;
+  
+  html += '</svg>';
+  
+  return html;
 }
 
 /* =========================
@@ -1226,8 +1902,9 @@ el.btnSolve.addEventListener('click', ()=>{
     renderSummary();
 
     el.defScale.disabled = false;
+    el.defScaleInput.disabled = false;
     el.defScale.value = 0;
-    el.defScaleLabel.textContent = "0";
+    el.defScaleInput.value = 0;
 
     logLine(`OK: Static solve complete. DOF ${sol.meta.ndof} (free ${sol.meta.nFree}, fixed ${sol.meta.nFixed}).`, "log-ok");
     logLine(`Displacements (expanded): Max |u| = ${disp.maxMag.val.toFixed(4)} at ${disp.maxMag.label}`, "log-ok");
@@ -1247,8 +1924,36 @@ el.btnSolve.addEventListener('click', ()=>{
 });
 
 el.defScale.addEventListener('input', ()=>{
-  el.defScaleLabel.textContent = String(el.defScale.value);
+  const val = Number(el.defScale.value);
+  el.defScaleInput.value = val;
   if(Model.isDrawn) drawPrimary();
+});
+
+el.defScaleInput.addEventListener('input', ()=>{
+  const val = Number(el.defScaleInput.value);
+  const max = Number(el.defScale.max);
+  // Clamp to slider range
+  const clamped = Math.max(0, Math.min(max, val));
+  el.defScale.value = clamped;
+  el.defScaleInput.value = clamped;
+  if(Model.isDrawn) drawPrimary();
+});
+
+el.btnSetMaxScale.addEventListener('click', ()=>{
+  const newMax = Number(el.defScaleMaxInput.value);
+  if(!Number.isFinite(newMax) || newMax <= 0){
+    logLine("ERROR: Slider max must be a positive number", "log-err");
+    return;
+  }
+  el.defScale.max = newMax;
+  el.defScaleMax.textContent = newMax;
+  logLine(`OK: Deflection slider max set to ${newMax}`, "log-ok");
+});
+
+el.stressViewSelector.addEventListener('change', ()=>{
+  if(View.selectedSegmentForAnalysis !== null){
+    displayElementAnalysis(View.selectedSegmentForAnalysis);
+  }
 });
 
 /* =========================
@@ -1272,8 +1977,42 @@ function findNodeAtScreenPoint(sx, sy, tolerance = 10){
   return null;
 }
 
+function findElemAtScreenPoint(sx, sy, tolerance = 8){
+  // Find which element (if any) is near the screen point
+  // Check distance from point to line segment in screen space
+  for(const e of Model.elems){
+    const ni = Model.nodeById.get(e.ni);
+    const nj = Model.nodeById.get(e.nj);
+    if(!ni || !nj) continue;
+    
+    const p1 = project3D(ni.x, ni.y, ni.z);
+    const p2 = project3D(nj.x, nj.y, nj.z);
+    
+    // Vector from p1 to p2
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len2 = dx*dx + dy*dy;
+    
+    if(len2 < 1e-6) continue; // Skip zero-length segments
+    
+    // Parameter t of closest point on line segment
+    let t = ((sx - p1.x)*dx + (sy - p1.y)*dy) / len2;
+    t = Math.max(0, Math.min(1, t)); // Clamp to segment
+    
+    // Closest point on segment
+    const closestX = p1.x + t*dx;
+    const closestY = p1.y + t*dy;
+    
+    // Distance from mouse to closest point
+    const dist = Math.sqrt((sx - closestX)**2 + (sy - closestY)**2);
+    
+    if(dist <= tolerance) return e;
+  }
+  return null;
+}
+
 function formatBCTooltip(node){
-  // Format boundary condition tooltip
+  // Format boundary condition tooltip with loads
   const parts = [];
   
   const ux = node.ux.prescribed ? `Ux=${node.ux.value}` : "Ux=free";
@@ -1283,24 +2022,89 @@ function formatBCTooltip(node){
   const ry = node.ry.prescribed ? `Ry=${node.ry.value}` : "Ry=free";
   const rz = node.rz.prescribed ? `Rz=${node.rz.value}` : "Rz=free";
   
-  return `Node ${node.id}: ${ux}, ${uy}, ${uz}, ${rx}, ${ry}, ${rz}`;
+  let tooltip = `Node ${node.id}: ${ux}, ${uy}, ${uz}, ${rx}, ${ry}, ${rz}`;
+  
+  // Add loads if any are non-zero
+  const fx = node.loads.fx || 0;
+  const fy = node.loads.fy || 0;
+  const fz = node.loads.fz || 0;
+  
+  if(fx !== 0 || fy !== 0 || fz !== 0){
+    const loadParts = [];
+    if(fx !== 0) loadParts.push(`Fx=${fx}`);
+    if(fy !== 0) loadParts.push(`Fy=${fy}`);
+    if(fz !== 0) loadParts.push(`Fz=${fz}`);
+    tooltip += ` | Loads: ${loadParts.join(', ')}`;
+  }
+  
+  return tooltip;
+}
+
+function formatElemTooltip(elem){
+  // Format element properties tooltip
+  const ni = Model.nodeById.get(elem.ni);
+  const nj = Model.nodeById.get(elem.nj);
+  
+  let tooltip = `Segment ${elem.id}: Node ${elem.ni}→${elem.nj}`;
+  tooltip += ` | E=${elem.E.toExponential(2)}, G=${elem.G.toExponential(2)}`;
+  tooltip += ` | Izz=${elem.Izz}, Iyy=${elem.Iyy}, Jyz=${elem.Jyz}, Ayz=${elem.Ayz}`;
+  tooltip += ` | Orient: (${elem.x3}, ${elem.y3}, ${elem.z3})`;
+  
+  // Calculate length
+  if(ni && nj){
+    const dx = nj.x - ni.x;
+    const dy = nj.y - ni.y;
+    const dz = nj.z - ni.z;
+    const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    tooltip += ` | Length=${len.toFixed(2)}`;
+  }
+  
+  return tooltip;
 }
 
 function updateTooltip(){
-  // Update the tooltip display based on pinned or hovered node
-  const displayNode = View.pinnedNode ?? View.hoveredNode;
+  // Update the tooltip display based on pinned or hovered node/element
+  // Priority: pinned element > pinned node > hovered element > hovered node
   
-  if(displayNode !== null){
-    const node = Model.nodeById.get(displayNode);
+  if(View.pinnedElem !== null){
+    const elem = Model.elemById.get(View.pinnedElem);
+    if(elem){
+      const tooltip = formatElemTooltip(elem);
+      el.selInfo.textContent = tooltip + " (pinned - click elsewhere to unpin)";
+      el.selInfo.style.color = "var(--text)";
+      return;
+    }
+  }
+  
+  if(View.pinnedNode !== null){
+    const node = Model.nodeById.get(View.pinnedNode);
     if(node){
       const tooltip = formatBCTooltip(node);
-      const pinIndicator = (View.pinnedNode !== null) ? " (pinned - click elsewhere to unpin)" : "";
-      el.selInfo.textContent = tooltip + pinIndicator;
+      el.selInfo.textContent = tooltip + " (pinned - click elsewhere to unpin)";
       el.selInfo.style.color = "var(--text)";
+      return;
     }
-  } else {
-    el.selInfo.textContent = "";
   }
+  
+  if(View.hoveredElem !== null){
+    const elem = Model.elemById.get(View.hoveredElem);
+    if(elem){
+      el.selInfo.textContent = formatElemTooltip(elem);
+      el.selInfo.style.color = "var(--text)";
+      return;
+    }
+  }
+  
+  if(View.hoveredNode !== null){
+    const node = Model.nodeById.get(View.hoveredNode);
+    if(node){
+      el.selInfo.textContent = formatBCTooltip(node);
+      el.selInfo.style.color = "var(--text)";
+      return;
+    }
+  }
+  
+  el.selInfo.textContent = "";
 }
 
 el.canvas.addEventListener('mousedown',(evt)=>{
@@ -1309,23 +2113,42 @@ el.canvas.addEventListener('mousedown',(evt)=>{
   
   const p = canvasPointFromEvent(evt);
   
-  // Check if clicking on a node (only for left click)
+  // Check if clicking on a node or element (only for left click)
   if(evt.button === 0){
+    // Nodes have priority over elements
     const clickedNode = findNodeAtScreenPoint(p.x, p.y);
+    const clickedElem = clickedNode ? null : findElemAtScreenPoint(p.x, p.y);
+    
     if(clickedNode){
       // Toggle pin on this node
       if(View.pinnedNode === clickedNode.id){
         View.pinnedNode = null; // Unpin if already pinned
       } else {
         View.pinnedNode = clickedNode.id; // Pin this node
+        View.pinnedElem = null; // Unpin any element
       }
       updateTooltip();
       if(Model.isDrawn) drawPrimary();
       return; // Don't start drag if clicking a node
+    } else if(clickedElem){
+      // Toggle pin on this element
+      if(View.pinnedElem === clickedElem.id){
+        View.pinnedElem = null; // Unpin if already pinned
+      } else {
+        View.pinnedElem = clickedElem.id; // Pin this element
+        View.pinnedNode = null; // Unpin any node
+        // Display analysis for this element
+        View.selectedSegmentForAnalysis = clickedElem.id;
+        displayElementAnalysis(clickedElem.id);
+      }
+      updateTooltip();
+      if(Model.isDrawn) drawPrimary();
+      return; // Don't start drag if clicking an element
     } else {
-      // Clicked empty space, unpin
-      if(View.pinnedNode !== null){
+      // Clicked empty space, unpin everything
+      if(View.pinnedNode !== null || View.pinnedElem !== null){
         View.pinnedNode = null;
+        View.pinnedElem = null;
         updateTooltip();
         if(Model.isDrawn) drawPrimary();
       }
@@ -1379,12 +2202,16 @@ window.addEventListener('mousemove',(evt)=>{
     
     if(Model.isDrawn) drawPrimary();
   } else {
-    // Check for node hover when not dragging
+    // Check for node hover when not dragging (nodes have priority over elements)
     const hoveredNode = findNodeAtScreenPoint(p.x, p.y);
-    const newHoverID = hoveredNode ? hoveredNode.id : null;
+    const hoveredElem = hoveredNode ? null : findElemAtScreenPoint(p.x, p.y);
     
-    if(newHoverID !== View.hoveredNode){
-      View.hoveredNode = newHoverID;
+    const newNodeID = hoveredNode ? hoveredNode.id : null;
+    const newElemID = hoveredElem ? hoveredElem.id : null;
+    
+    if(newNodeID !== View.hoveredNode || newElemID !== View.hoveredElem){
+      View.hoveredNode = newNodeID;
+      View.hoveredElem = newElemID;
       updateTooltip();
       if(Model.isDrawn) drawPrimary();
     }
