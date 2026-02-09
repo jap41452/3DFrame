@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Frame Import + Paste (v7: Robust Segment Updates – Solve Always Uses Current Text)</title>
+<title>3D Frame Analysis (v2: Clean Data Model - Static/Modal Solver)</title>
 <style>
   :root{
     --bg:#ffffff;
@@ -19,8 +19,8 @@
   }
   html,body{height:100%; margin:0; font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--text);}
   #app{height:100%; display:flex; align-items:flex-start; gap:10px; padding:10px; box-sizing:border-box;}
-  #ui{width:250px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box;}
-  #viewportWrap{width:300px; height:300px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; box-sizing:border-box; display:flex; flex-direction:column; gap:6px;}
+  #ui{width:375px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; box-sizing:border-box; overflow-y:auto;}
+  #viewportWrap{flex:1; min-width:600px; height:600px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:8px; box-sizing:border-box; display:flex; flex-direction:column; gap:6px;}
   #canvas{width:100%; height:100%; background:#ffffff; border:1px solid var(--line); border-radius:8px; display:block;}
   h3{margin:0 0 8px 0; font-size:14px; font-weight:700;}
   .sectionTitle{font-size:12px; font-weight:700; margin:10px 0 6px; color:#1f2937;}
@@ -55,7 +55,7 @@
     <button id="btnImportNodes">Load Nodes File</button>
     <input id="fileNodes" type="file" accept=".txt,.tsv,.csv" style="display:none" />
     <div class="hint small">Paste from Excel (tab-delimited) or CSV. Header row optional.</div>
-    <textarea id="taNodes" placeholder="Paste node table: node  x  y  dX  dY  theta  Fx  Fy  M"></textarea>
+    <textarea id="taNodes" placeholder="Paste node table: node  x  y  z  delX  delY  delZ  thetaXX  thetaYY  thetaZZ  Fx  Fy  Fz"></textarea>
     <div class="btnRow">
       <button id="btnParseNodes" class="mini">Use Nodes</button>
       <button id="btnResetNodes" class="mini">Reset</button>
@@ -64,8 +64,8 @@
     <div class="sectionTitle">Segments</div>
     <button id="btnImportElems">Load Segments File</button>
     <input id="fileElems" type="file" accept=".txt,.tsv,.csv" style="display:none" />
-    <div class="hint small">ni  nj  E  I  A  S  SF  MatType (1=Ductile, 2=Brittle)</div>
-    <textarea id="taElems" placeholder="Paste segment table: ni  nj  E  I  A  S  SF  MatType(1/2)"></textarea>
+    <div class="hint small">elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  x3  y3  z3</div>
+    <textarea id="taElems" placeholder="Paste segment table: elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  x3  y3  z3"></textarea>
     <div class="btnRow">
       <button id="btnParseElems" class="mini">Use Segments</button>
       <button id="btnResetElems" class="mini">Reset</button>
@@ -86,36 +86,52 @@
       <div class="hint small">After solve, increase scale to view the overlaid deflected shape.</div>
     </div>
 
-    <div class="hint">Viewport: Wheel = zoom, Drag = pan.</div>
+    <div class="hint">Viewport: Left-drag = orbit, Right-drag = pan, Wheel = zoom.</div>
     <div id="summary"></div>
     <div id="log"></div>
   </div>
 
   <div id="viewportWrap">
     <div id="vpBar">
-      <div>Viewport</div>
+      <div>3D Viewport</div>
       <div id="status" class="small">Idle</div>
     </div>
-    <canvas id="canvas" width="284" height="260"></canvas>
+    <canvas id="canvas"></canvas>
     <div id="selInfo"></div>
   </div>
 </div>
 
 <script>
 /* =========================
+   3D FRAME ANALYSIS v2
+   =========================
+   DEVELOPMENT STATUS:
+   ✓ Data model updated to full 3D (x,y,z coords, 6 DOF per node, 3D element properties)
+   ✓ Material type (brittle/ductile) removed - simple static & modes solver
+   ✓ 3D viewport with orbit/pan/zoom camera controls
+   
+   TODO (Next Steps):
+   - Implement 3D space frame element stiffness (12x12, using E, G, Ayz, Izz, Iyy, Jyz)
+   - Implement local coordinate transformation using x3,y3,z3 orientation point
+   - Update solver to use 6 DOF per node (ux,uy,uz, rx,ry,rz)
+   - Add modal analysis (eigenvalue solver for natural frequencies & mode shapes)
+   - Update stress recovery for 3D elements
+   ========================= */
+
+/* =========================
    Defaults
    ========================= */
 const DEFAULT_NODES_TEXT =
-`1\t0\t0\t0\t0
-2\t0\t96\t\t\t\t1000
-3\t96\t96
-4\t96\t0\t0\t0`;
+`1\t0\t0\t0\t0\t0\t0
+2\t0\t96\t0\t\t\t\t\t\t\t1000\t0\t0
+3\t96\t96\t0
+4\t96\t0\t0\t0\t0\t0`;
 
 const DEFAULT_ELEMS_TEXT =
-`1\t2\t12000000\t10.7\t8\t5.35\t1\t2
-2\t3\t12000000\t10.7\t8\t5.35\t1\t2
-3\t4\t12000000\t10.7\t8\t5.35\t1\t2
-2\t4\t12000000\t10.7\t8\t5.35\t1\t2`;
+`1\t2\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1
+2\t3\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1
+3\t4\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1
+2\t4\t12000000\t4600000\t10.7\t10.7\t21.4\t8\t0\t0\t1`;
 
 /* =========================
    Model
@@ -130,10 +146,18 @@ const Model = {
 };
 
 const View = {
-  cam: { scale: 1, panX: 0, panY: 0 },
+  cam: {
+    distance: 300,
+    azimuth: 45 * Math.PI / 180,   // horizontal rotation
+    elevation: 30 * Math.PI / 180, // vertical rotation
+    centerX: 48,
+    centerY: 48,
+    centerZ: 0
+  },
   isInteractive: false,
   dragging: false,
-  dragStart: {x:0,y:0, panX:0, panY:0}
+  dragButton: 0,
+  dragStart: {x:0, y:0, azimuth:0, elevation:0, centerX:0, centerY:0, centerZ:0}
 };
 
 /* =========================
@@ -163,6 +187,18 @@ const el = {
 const ctx = el.canvas.getContext('2d');
 
 /* =========================
+   Canvas sizing
+   ========================= */
+function resizeCanvas(){
+  const rect = el.canvas.getBoundingClientRect();
+  el.canvas.width = rect.width;
+  el.canvas.height = rect.height;
+  if(Model.isDrawn) drawPrimary();
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+/* =========================
    Logging
    ========================= */
 function logClear(){ el.log.textContent = ""; }
@@ -184,8 +220,10 @@ function renderSummary(){
   const n = Model.nodes.length;
   const m = Model.elems.length;
   const prescribed = Model.nodes.reduce((acc,nd)=>acc +
-    (nd.ux.prescribed?1:0)+(nd.uy.prescribed?1:0)+(nd.rz.prescribed?1:0), 0);
-  const loads = Model.nodes.reduce((acc,nd)=>acc + ((nd.loads.fx||0)!==0?1:0)+((nd.loads.fy||0)!==0?1:0)+((nd.loads.mz||0)!==0?1:0), 0);
+    (nd.ux.prescribed?1:0)+(nd.uy.prescribed?1:0)+(nd.uz.prescribed?1:0)+
+    (nd.rx.prescribed?1:0)+(nd.ry.prescribed?1:0)+(nd.rz.prescribed?1:0), 0);
+  const loads = Model.nodes.reduce((acc,nd)=>acc + 
+    ((nd.loads.fx||0)!==0?1:0)+((nd.loads.fy||0)!==0?1:0)+((nd.loads.fz||0)!==0?1:0), 0);
 
   el.summary.innerHTML = "";
   el.summary.appendChild(badge(`Nodes: ${n}`));
@@ -238,7 +276,7 @@ function normalizeHeader(h){
 }
 
 /* =========================
-   Parse nodes: node x y dX dY theta Fx Fy M
+   Parse nodes: node x y z delX delY delZ thetaXX thetaYY thetaZZ Fx Fy Fz
    ========================= */
 function parseNodes(text){
   const lines = text.split(/\r?\n/);
@@ -276,37 +314,49 @@ function parseNodes(text){
 
     const x = toNumberOrNull(get(toks,"x",1));
     const y = toNumberOrNull(get(toks,"y",2));
+    const z = toNumberOrNull(get(toks,"z",3));
     if(!Number.isFinite(x)) throw new Error(`Row ${r+1}: invalid X`);
     if(!Number.isFinite(y)) throw new Error(`Row ${r+1}: invalid Y`);
+    if(!Number.isFinite(z)) throw new Error(`Row ${r+1}: invalid Z`);
 
-    const dx = toNumberOrNull(get(toks,"dx",3) ?? get(toks,"delx",3));
-    const dy = toNumberOrNull(get(toks,"dy",4) ?? get(toks,"dely",4));
-    const th = toNumberOrNull(get(toks,"theta",5) ?? get(toks,"thetaxy",5) ?? get(toks,"rz",5));
+    const dx = toNumberOrNull(get(toks,"delx",4) ?? get(toks,"dx",4));
+    const dy = toNumberOrNull(get(toks,"dely",5) ?? get(toks,"dy",5));
+    const dz = toNumberOrNull(get(toks,"delz",6) ?? get(toks,"dz",6));
+    
+    const thx = toNumberOrNull(get(toks,"thetaxx",7) ?? get(toks,"thxx",7) ?? get(toks,"rx",7));
+    const thy = toNumberOrNull(get(toks,"thetayy",8) ?? get(toks,"thyy",8) ?? get(toks,"ry",8));
+    const thz = toNumberOrNull(get(toks,"thetazz",9) ?? get(toks,"thzz",9) ?? get(toks,"rz",9));
 
-    const fx = toNumberOrZero(get(toks,"fx",6));
-    const fy = toNumberOrZero(get(toks,"fy",7));
-    const mz = toNumberOrZero(get(toks,"m",8) ?? get(toks,"mxy",8) ?? get(toks,"mz",8));
+    const fx = toNumberOrZero(get(toks,"fx",10));
+    const fy = toNumberOrZero(get(toks,"fy",11));
+    const fz = toNumberOrZero(get(toks,"fz",12));
 
     if(!Number.isFinite(fx)) throw new Error(`Row ${r+1}: invalid Fx`);
     if(!Number.isFinite(fy)) throw new Error(`Row ${r+1}: invalid Fy`);
-    if(!Number.isFinite(mz)) throw new Error(`Row ${r+1}: invalid M`);
-    if(dx!==null && !Number.isFinite(dx)) throw new Error(`Row ${r+1}: invalid dX`);
-    if(dy!==null && !Number.isFinite(dy)) throw new Error(`Row ${r+1}: invalid dY`);
-    if(th!==null && !Number.isFinite(th)) throw new Error(`Row ${r+1}: invalid theta`);
+    if(!Number.isFinite(fz)) throw new Error(`Row ${r+1}: invalid Fz`);
+    if(dx!==null && !Number.isFinite(dx)) throw new Error(`Row ${r+1}: invalid delX`);
+    if(dy!==null && !Number.isFinite(dy)) throw new Error(`Row ${r+1}: invalid delY`);
+    if(dz!==null && !Number.isFinite(dz)) throw new Error(`Row ${r+1}: invalid delZ`);
+    if(thx!==null && !Number.isFinite(thx)) throw new Error(`Row ${r+1}: invalid thetaXX`);
+    if(thy!==null && !Number.isFinite(thy)) throw new Error(`Row ${r+1}: invalid thetaYY`);
+    if(thz!==null && !Number.isFinite(thz)) throw new Error(`Row ${r+1}: invalid thetaZZ`);
 
     nodes.push({
-      id, x, y,
+      id, x, y, z,
       ux: { prescribed: dx!==null, value: dx ?? 0 },
       uy: { prescribed: dy!==null, value: dy ?? 0 },
-      rz: { prescribed: th!==null, value: th ?? 0 },
-      loads: { fx, fy, mz }
+      uz: { prescribed: dz!==null, value: dz ?? 0 },
+      rx: { prescribed: thx!==null, value: thx ?? 0 },
+      ry: { prescribed: thy!==null, value: thy ?? 0 },
+      rz: { prescribed: thz!==null, value: thz ?? 0 },
+      loads: { fx, fy, fz }
     });
   }
   return nodes;
 }
 
 /* =========================
-   Parse elems: ni nj E I A S SF MatType(1/2)
+   Parse elems: elem ni nj E G Izz Iyy Jyz Ayz x3 y3 z3
    ========================= */
 function parseElems(text){
   const lines = text.split(/\r?\n/);
@@ -336,34 +386,40 @@ function parseElems(text){
   for(let r=startIdx; r<rows.length; r++){
     const toks = rows[r];
 
-    const niTok = get(toks,"ni",0) ?? get(toks,"nodei",0) ?? toks[0];
-    const njTok = get(toks,"nj",1) ?? get(toks,"nodej",1) ?? toks[1];
+    const elemTok = get(toks,"elem",0) ?? get(toks,"element",0) ?? toks[0];
+    const niTok = get(toks,"ni",1) ?? get(toks,"nodei",1) ?? toks[1];
+    const njTok = get(toks,"nj",2) ?? get(toks,"nodej",2) ?? toks[2];
+    
+    const id = parseInt(String(elemTok).trim(), 10);
     const ni = parseInt(String(niTok).trim(),10);
     const nj = parseInt(String(njTok).trim(),10);
+    
+    if(!Number.isFinite(id)) throw new Error(`Row ${r+1}: invalid element number`);
     if(!Number.isFinite(ni) || !Number.isFinite(nj)) throw new Error(`Row ${r+1}: invalid node i/j`);
     if(ni === nj) throw new Error(`Row ${r+1}: ni and nj cannot be the same (${ni})`);
 
-    const E = toNumberOrNull(get(toks,"e",2));
-    const I = toNumberOrNull(get(toks,"i",3));
-    const A = toNumberOrNull(get(toks,"a",4));
-    const S = toNumberOrZero(get(toks,"s",5));
-    const SFraw = toNumberOrZero(get(toks,"sf",6));
-    const matTok = get(toks,"mattype",7) ?? get(toks,"mat",7) ?? get(toks,"type",7) ?? toks[7];
+    const E = toNumberOrNull(get(toks,"e",3));
+    const G = toNumberOrNull(get(toks,"g",4));
+    const Izz = toNumberOrNull(get(toks,"izz",5));
+    const Iyy = toNumberOrNull(get(toks,"iyy",6));
+    const Jyz = toNumberOrNull(get(toks,"jyz",7) ?? get(toks,"j",7));
+    const Ayz = toNumberOrNull(get(toks,"ayz",8) ?? get(toks,"a",8));
+    
+    const x3 = toNumberOrNull(get(toks,"x3",9));
+    const y3 = toNumberOrNull(get(toks,"y3",10));
+    const z3 = toNumberOrNull(get(toks,"z3",11));
 
     if(!Number.isFinite(E) || E<=0) throw new Error(`Row ${r+1}: invalid E (must be > 0)`);
-    if(!Number.isFinite(I) || I<=0) throw new Error(`Row ${r+1}: invalid I (must be > 0)`);
-    if(!Number.isFinite(A) || A<=0) throw new Error(`Row ${r+1}: invalid A (must be > 0)`);
-    if(!Number.isFinite(S)) throw new Error(`Row ${r+1}: invalid S`);
-    if(!Number.isFinite(SFraw)) throw new Error(`Row ${r+1}: invalid SF`);
+    if(!Number.isFinite(G) || G<=0) throw new Error(`Row ${r+1}: invalid G (must be > 0)`);
+    if(!Number.isFinite(Izz) || Izz<=0) throw new Error(`Row ${r+1}: invalid Izz (must be > 0)`);
+    if(!Number.isFinite(Iyy) || Iyy<=0) throw new Error(`Row ${r+1}: invalid Iyy (must be > 0)`);
+    if(!Number.isFinite(Jyz) || Jyz<=0) throw new Error(`Row ${r+1}: invalid Jyz (must be > 0)`);
+    if(!Number.isFinite(Ayz) || Ayz<=0) throw new Error(`Row ${r+1}: invalid Ayz (must be > 0)`);
+    if(!Number.isFinite(x3)) throw new Error(`Row ${r+1}: invalid x3`);
+    if(!Number.isFinite(y3)) throw new Error(`Row ${r+1}: invalid y3`);
+    if(!Number.isFinite(z3)) throw new Error(`Row ${r+1}: invalid z3`);
 
-    const matRaw = String(matTok ?? "").trim();
-    let matType = 0;
-    if(matRaw === "1") matType = 1;
-    else if(matRaw === "2") matType = 2;
-    else throw new Error(`Row ${r+1}: MatType must be 1(ductile) or 2(brittle)`);
-
-    const SF = (SFraw===0 ? 1 : SFraw);
-    elems.push({ id: r - startIdx + 1, ni, nj, E, I, A, S, SF, matType });
+    elems.push({ id, ni, nj, E, G, Izz, Iyy, Jyz, Ayz, x3, y3, z3 });
   }
   return elems;
 }
@@ -404,13 +460,9 @@ function updateButtons(){
 }
 
 /* =========================
-   SOLID FIX:
-   Always “sync” from the current textareas before Draw and Solve.
-   This guarantees that edits take effect immediately (no finicky “double solve”).
+   Sync from textareas
    ========================= */
 function syncFromTextareas({nodes=true, elems=true, announce=false} = {}){
-  // parse + install from the current textarea text
-  // if parsing fails, do not partially update; throw error
   const newNodes = nodes ? parseNodes(el.taNodes.value || "") : null;
   const newElems = elems ? parseElems(el.taElems.value || "") : null;
 
@@ -427,139 +479,137 @@ function syncFromTextareas({nodes=true, elems=true, announce=false} = {}){
 }
 
 /* =========================
-   View transform
+   3D Camera & Projection
    ========================= */
-function worldToScreen(pt){
-  return { x: pt.x * View.cam.scale + View.cam.panX, y: (-pt.y) * View.cam.scale + View.cam.panY };
+function project3D(x, y, z){
+  // Simple perspective projection
+  const cam = View.cam;
+  
+  // Camera position in spherical coordinates
+  const camX = cam.centerX + cam.distance * Math.cos(cam.elevation) * Math.cos(cam.azimuth);
+  const camY = cam.centerY + cam.distance * Math.cos(cam.elevation) * Math.sin(cam.azimuth);
+  const camZ = cam.centerZ + cam.distance * Math.sin(cam.elevation);
+  
+  // Vector from camera to point
+  const dx = x - camX;
+  const dy = y - camY;
+  const dz = z - camZ;
+  
+  // Camera basis vectors (simplified - looking at center point)
+  const toCenter = {
+    x: cam.centerX - camX,
+    y: cam.centerY - camY,
+    z: cam.centerZ - camZ
+  };
+  const dist = Math.sqrt(toCenter.x**2 + toCenter.y**2 + toCenter.z**2);
+  const forward = {
+    x: toCenter.x / dist,
+    y: toCenter.y / dist,
+    z: toCenter.z / dist
+  };
+  
+  // Right vector (cross product of forward and world up)
+  const worldUp = {x: 0, y: 0, z: 1};
+  const right = {
+    x: forward.y * worldUp.z - forward.z * worldUp.y,
+    y: forward.z * worldUp.x - forward.x * worldUp.z,
+    z: forward.x * worldUp.y - forward.y * worldUp.x
+  };
+  const rightLen = Math.sqrt(right.x**2 + right.y**2 + right.z**2);
+  right.x /= rightLen; right.y /= rightLen; right.z /= rightLen;
+  
+  // Up vector (cross product of right and forward)
+  const up = {
+    x: right.y * forward.z - right.z * forward.y,
+    y: right.z * forward.x - right.x * forward.z,
+    z: right.x * forward.y - right.y * forward.x
+  };
+  
+  // Project onto camera plane
+  const screenX = dx * right.x + dy * right.y + dz * right.z;
+  const screenY = dx * up.x + dy * up.y + dz * up.z;
+  const depth = dx * forward.x + dy * forward.y + dz * forward.z;
+  
+  // Perspective division and screen mapping
+  const scale = 600 / cam.distance; // Perspective scale
+  const cx = el.canvas.width / 2;
+  const cy = el.canvas.height / 2;
+  
+  return {
+    x: cx + screenX * scale,
+    y: cy - screenY * scale,
+    depth: depth
+  };
 }
-function screenToWorld(pt){
-  return { x: (pt.x - View.cam.panX) / View.cam.scale, y: -(pt.y - View.cam.panY) / View.cam.scale };
-}
-function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
-function fitView(nodes){
+
+function fitView3D(nodes){
   if(!nodes || nodes.length===0) return;
-  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  let minX=Infinity, minY=Infinity, minZ=Infinity;
+  let maxX=-Infinity, maxY=-Infinity, maxZ=-Infinity;
   for(const n of nodes){
     minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
     minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    minZ = Math.min(minZ, n.z); maxZ = Math.max(maxZ, n.z);
   }
-  const dx = Math.max(1e-9, maxX - minX);
-  const dy = Math.max(1e-9, maxY - minY);
-  const pad = 0.15;
-  const w = el.canvas.width, h = el.canvas.height;
-  const scale = Math.min((w*(1-2*pad))/dx, (h*(1-2*pad))/dy);
-  const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
-  View.cam.scale = scale;
-  View.cam.panX = w/2 - cx*scale;
-  View.cam.panY = h/2 + cy*scale;
+  const cx = (minX+maxX)/2, cy = (minY+maxY)/2, cz = (minZ+maxZ)/2;
+  const span = Math.max(maxX-minX, maxY-minY, maxZ-minZ, 50);
+  
+  View.cam.centerX = cx;
+  View.cam.centerY = cy;
+  View.cam.centerZ = cz;
+  View.cam.distance = span * 2.5;
 }
 
 /* =========================
-   Drawing + load glyphs + deflected overlay
+   Drawing
    ========================= */
 function clearCanvas(){
   ctx.clearRect(0,0,el.canvas.width,el.canvas.height);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0,0,el.canvas.width,el.canvas.height);
 }
-function niceStep(raw){
-  const k = Math.floor(Math.log10(raw));
-  const base = raw / Math.pow(10,k);
-  let m = 1;
-  if(base>5) m=10;
-  else if(base>2) m=5;
-  else if(base>1) m=2;
-  else m=1;
-  return m*Math.pow(10,k);
-}
-function drawGrid(){
-  const w = el.canvas.width, h = el.canvas.height;
-  const targetPx = 55;
-  const stepWorld = niceStep(targetPx / View.cam.scale);
 
-  const p0 = screenToWorld({x:0,y:h});
-  const p1 = screenToWorld({x:w,y:0});
-  const minX = Math.min(p0.x,p1.x), maxX = Math.max(p0.x,p1.x);
-  const minY = Math.min(p0.y,p1.y), maxY = Math.max(p0.y,p1.y);
-
-  const x0 = Math.floor(minX/stepWorld)*stepWorld;
-  const x1 = Math.ceil(maxX/stepWorld)*stepWorld;
-  const y0 = Math.floor(minY/stepWorld)*stepWorld;
-  const y1 = Math.ceil(maxY/stepWorld)*stepWorld;
-
+function drawGrid3D(){
+  const gridSize = 200;
+  const gridStep = 20;
+  
   ctx.save();
-  ctx.strokeStyle = "rgba(0,0,0,0.06)";
-  ctx.lineWidth = 1;
-
-  for(let x=x0; x<=x1+1e-9; x+=stepWorld){
-    const a = worldToScreen({x, y:minY});
-    const b = worldToScreen({x, y:maxY});
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,0.08)";
+  ctx.lineWidth = 0.5;
+  
+  // Draw XY grid at z=0
+  for(let x = -gridSize; x <= gridSize; x += gridStep){
+    const p1 = project3D(x, -gridSize, 0);
+    const p2 = project3D(x, gridSize, 0);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
   }
-  for(let y=y0; y<=y1+1e-9; y+=stepWorld){
-    const a = worldToScreen({x:minX, y});
-    const b = worldToScreen({x:maxX, y});
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  for(let y = -gridSize; y <= gridSize; y += gridStep){
+    const p1 = project3D(-gridSize, y, 0);
+    const p2 = project3D(gridSize, y, 0);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
   }
-
-  ctx.strokeStyle = "rgba(0,0,0,0.18)";
-  ctx.lineWidth = 1.5;
-  { const a = worldToScreen({x:0,y:minY}); const b = worldToScreen({x:0,y:maxY}); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
-  { const a = worldToScreen({x:minX,y:0}); const b = worldToScreen({x:maxX,y:0}); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
-  ctx.restore();
-}
-function drawArrow(px,py, dx,dy, color="#111827"){
-  const L = Math.hypot(dx,dy);
-  if(L < 1e-6) return;
-  const ux = dx/L, uy = dy/L;
-  const head = Math.min(10, Math.max(6, 0.25*L));
-  const hx = px + dx, hy = py + dy;
-
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.fillStyle = color;
-  ctx.lineWidth = 1.8;
-
-  ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(hx,hy); ctx.stroke();
-
-  const nx = -uy, ny = ux;
-  ctx.beginPath();
-  ctx.moveTo(hx,hy);
-  ctx.lineTo(hx - head*ux + 0.55*head*nx, hy - head*uy + 0.55*head*ny);
-  ctx.lineTo(hx - head*ux - 0.55*head*nx, hy - head*uy - 0.55*head*ny);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
-function drawMomentGlyph(px,py, sign, color="#111827"){
-  const r = 12;
-  const start = sign>0 ? Math.PI*0.15 : Math.PI*1.15;
-  const end   = sign>0 ? Math.PI*1.15 : Math.PI*0.15;
-
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  ctx.arc(px,py,r,start,end, sign<0);
-  ctx.stroke();
-
-  const ex = px + r*Math.cos(end);
-  const ey = py + r*Math.sin(end);
-  const tx = -Math.sin(end);
-  const ty =  Math.cos(end);
-  const dir = (sign>0) ? 1 : -1;
-
-  const ah = 7;
-  const ux = dir*tx, uy = dir*ty;
-  const nx = -uy, ny = ux;
-
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(ex,ey);
-  ctx.lineTo(ex - ah*ux + 0.55*ah*nx, ey - ah*uy + 0.55*ah*ny);
-  ctx.lineTo(ex - ah*ux - 0.55*ah*nx, ey - ah*uy - 0.55*ah*ny);
-  ctx.closePath();
-  ctx.fill();
+  
+  // Draw axes
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(220,38,38,0.5)"; // X axis
+  let p1 = project3D(0,0,0);
+  let p2 = project3D(50,0,0);
+  ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+  
+  ctx.strokeStyle = "rgba(34,197,94,0.5)"; // Y axis
+  p2 = project3D(0,50,0);
+  ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+  
+  ctx.strokeStyle = "rgba(59,130,246,0.5)"; // Z axis
+  p2 = project3D(0,0,50);
+  ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+  
   ctx.restore();
 }
 
@@ -576,11 +626,13 @@ function overlayDeflectedIfAvailable(){
   for(const e of expanded.elems){
     const n1 = expanded.nodes[e.ni];
     const n2 = expanded.nodes[e.nj];
+    // TEMPORARY: Still reading from 3-DOF layout
     const ux1 = U[3*e.ni+0], uy1 = U[3*e.ni+1];
     const ux2 = U[3*e.nj+0], uy2 = U[3*e.nj+1];
+    // TODO: Add uz1 = U[3*e.ni+2], uz2 = U[3*e.nj+2] when using 6-DOF
 
-    const p1 = worldToScreen({ x: n1.x + scale*ux1, y: n1.y + scale*uy1 });
-    const p2 = worldToScreen({ x: n2.x + scale*ux2, y: n2.y + scale*uy2 });
+    const p1 = project3D(n1.x + scale*ux1, n1.y + scale*uy1, n1.z); // Using undeflected z for now
+    const p2 = project3D(n2.x + scale*ux2, n2.y + scale*uy2, n2.z);
 
     ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
   }
@@ -589,7 +641,7 @@ function overlayDeflectedIfAvailable(){
 
 function drawPrimary(){
   clearCanvas();
-  drawGrid();
+  drawGrid3D();
 
   // elements
   ctx.save();
@@ -599,42 +651,27 @@ function drawPrimary(){
     const ni = Model.nodeById.get(e.ni);
     const nj = Model.nodeById.get(e.nj);
     if(!ni || !nj) continue;
-    const a = worldToScreen(ni);
-    const b = worldToScreen(nj);
+    const a = project3D(ni.x, ni.y, ni.z);
+    const b = project3D(nj.x, nj.y, nj.z);
     ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
   }
   ctx.restore();
 
-  // nodes + loads
+  // nodes
   for(const n of Model.nodes){
-    const p = worldToScreen(n);
+    const p = project3D(n.x, n.y, n.z);
     ctx.save();
     ctx.beginPath(); ctx.arc(p.x,p.y,4.2,0,Math.PI*2);
     ctx.fillStyle = "rgba(37,99,235,0.65)";
     ctx.fill();
     ctx.restore();
-
-    const fx = n.loads.fx || 0;
-    const fy = n.loads.fy || 0;
-    const mz = n.loads.mz || 0;
-
-    const fmag = Math.hypot(fx,fy);
-    if(fmag > 0){
-      const L = 35 * (fmag / (fmag + 1000)); // heuristic scaling
-      const dx = (fx / fmag) * L;
-      const dy = (-fy / fmag) * L;
-      drawArrow(p.x, p.y, dx, dy, "#111827");
-    }
-    if(mz !== 0){
-      drawMomentGlyph(p.x, p.y, Math.sign(mz), "#111827");
-    }
   }
 
   overlayDeflectedIfAvailable();
 }
 
 /* =========================
-   Solver (expanded mesh / postproc)
+   Solver (TEMPORARY: Still uses 2D beam formulation - will be updated to 3D space frame)
    ========================= */
 function buildExpandedModel(nSub = 10){
   const expanded = { nodes: [], elems: [], mapPrimaryToExpandedIndex: new Map() };
@@ -643,14 +680,17 @@ function buildExpandedModel(nSub = 10){
   for(const pn of primaryNodesSorted){
     const idx = expanded.nodes.length;
     expanded.nodes.push({
-      x: pn.x, y: pn.y,
+      x: pn.x, y: pn.y, z: pn.z,
       label: `N${pn.id}`,
       bc: {
         ux: { prescribed: pn.ux.prescribed, value: pn.ux.value },
         uy: { prescribed: pn.uy.prescribed, value: pn.uy.value },
+        uz: { prescribed: pn.uz.prescribed, value: pn.uz.value },
+        rx: { prescribed: pn.rx.prescribed, value: pn.rx.value },
+        ry: { prescribed: pn.ry.prescribed, value: pn.ry.value },
         rz: { prescribed: pn.rz.prescribed, value: pn.rz.value }
       },
-      loads: { fx: pn.loads.fx, fy: pn.loads.fy, mz: pn.loads.mz }
+      loads: { fx: pn.loads.fx, fy: pn.loads.fy, fz: pn.loads.fz }
     });
     expanded.mapPrimaryToExpandedIndex.set(pn.id, idx);
   }
@@ -670,9 +710,13 @@ function buildExpandedModel(nSub = 10){
       expanded.nodes.push({
         x: nI.x + t*(nJ.x - nI.x),
         y: nI.y + t*(nJ.y - nI.y),
+        z: nI.z + t*(nJ.z - nI.z),
         label: `S${pe.id}.${k}`,
-        bc: { ux:{prescribed:false,value:0}, uy:{prescribed:false,value:0}, rz:{prescribed:false,value:0} },
-        loads: { fx:0, fy:0, mz:0 }
+        bc: { 
+          ux:{prescribed:false,value:0}, uy:{prescribed:false,value:0}, uz:{prescribed:false,value:0},
+          rx:{prescribed:false,value:0}, ry:{prescribed:false,value:0}, rz:{prescribed:false,value:0}
+        },
+        loads: { fx:0, fy:0, fz:0 }
       });
       internalIdx.push(idx);
     }
@@ -681,7 +725,8 @@ function buildExpandedModel(nSub = 10){
     for(let s=0; s<nSub; s++){
       expanded.elems.push({
         ni: chain[s], nj: chain[s+1],
-        E: pe.E, I: pe.I, A: pe.A, S: pe.S, SF: pe.SF, matType: pe.matType,
+        E: pe.E, G: pe.G, Izz: pe.Izz, Iyy: pe.Iyy, Jyz: pe.Jyz, Ayz: pe.Ayz,
+        x3: pe.x3, y3: pe.y3, z3: pe.z3,
         primaryElemId: pe.id,
         subIndex: s+1
       });
@@ -730,6 +775,11 @@ function solveLinearSystemDense(A, b){
 }
 
 function elementLocalStiffness(E,A,I,L){
+  // TODO: Replace with 3D space frame stiffness using E, G, Ayz, Izz, Iyy, Jyz
+  // For now, return minimal placeholder
+  return Array.from({length:6}, ()=> new Float64Array(6));
+  
+  /* OLD 2D CODE - TO BE REPLACED WITH 3D SPACE FRAME (12x12)
   const EA_L = (E*A)/L;
   const EI = E*I;
   const EI_L3 = EI/(L*L*L);
@@ -743,9 +793,12 @@ function elementLocalStiffness(E,A,I,L){
     [ 0,    -12*EI_L3, -6*EI_L2,     0,     12*EI_L3, -6*EI_L2 ],
     [ 0,      6*EI_L2,  2*EI_L1,     0,     -6*EI_L2,  4*EI_L1 ]
   ];
+  */
 }
 
 function solveStaticExpanded(expanded){
+  // TEMPORARY: Still uses 2D formulation (3 DOF per node)
+  // TODO: Update to full 3D space frame (6 DOF per node)
   const N = expanded.nodes.length;
   const ndof = 3*N;
 
@@ -757,7 +810,7 @@ function solveStaticExpanded(expanded){
     const n = expanded.nodes[i];
     F[3*i+0] += n.loads.fx;
     F[3*i+1] += n.loads.fy;
-    F[3*i+2] += n.loads.mz;
+    // F[3*i+2] would be moment mz (not implemented yet)
   }
 
   for(const e of expanded.elems){
@@ -845,8 +898,11 @@ function summarizeDisplacements(expanded, U){
   let maxMag = { val:-Infinity, label:"" };
   let minMag = { val:+Infinity, label:"" };
   for(let i=0;i<expanded.nodes.length;i++){
+    // TEMPORARY: Still reading from 3-DOF layout (ux, uy, _)
+    // TODO: Update to 6-DOF layout when solver is upgraded
     const ux = U[3*i+0], uy = U[3*i+1];
-    const mag = Math.hypot(ux,uy);
+    // const uz = U[3*i+2]; // Will be displacement when using 6-DOF
+    const mag = Math.hypot(ux,uy); // Should be Math.hypot(ux,uy,uz) in full 3D
     const lab = expanded.nodes[i].label || `idx${i}`;
     if(mag > maxMag.val) maxMag = { val:mag, label:lab };
     if(mag < minMag.val) minMag = { val:mag, label:lab };
@@ -855,6 +911,11 @@ function summarizeDisplacements(expanded, U){
 }
 
 function elementEndForcesLocal(expanded, e, U){
+  // TODO: Implement 3D element force recovery
+  // For now, return placeholder
+  return { fL: new Float64Array(12) }; // 12 DOF for 3D beam (6 per node)
+  
+  /* OLD 2D CODE - TO BE REPLACED
   const n1 = expanded.nodes[e.ni];
   const n2 = expanded.nodes[e.nj];
   const dx = n2.x-n1.x, dy = n2.y-n1.y;
@@ -881,9 +942,18 @@ function elementEndForcesLocal(expanded, e, U){
     fL[i]=sum;
   }
   return { fL };
+  */
 }
 
 function summarizeStresses(expanded, U){
+  // TODO: Implement 3D stress calculation using Ayz, Izz, Iyy, Jyz
+  // For now, return placeholder values
+  return { 
+    maxSig: { val: 0, at: "N/A (pending 3D implementation)" }, 
+    minSig: { val: 0, at: "N/A (pending 3D implementation)" } 
+  };
+  
+  /* OLD 2D CODE - TO BE REPLACED
   let maxSig = { val:-Infinity, at:"" };
   let minSig = { val:+Infinity, at:"" };
   for(const e of expanded.elems){
@@ -904,6 +974,7 @@ function summarizeStresses(expanded, U){
     if(localMin < minSig.val) minSig = { val:localMin, at:where };
   }
   return { maxSig, minSig };
+  */
 }
 
 /* =========================
@@ -917,8 +988,8 @@ el.fileNodes.addEventListener('change', async ()=>{
   if(!f) return;
   logClear(); setStatus("Reading nodes...");
   try{
-    el.taNodes.value = await f.text();      // load into textarea
-    syncFromTextareas({nodes:true, elems:false, announce:true}); // and install
+    el.taNodes.value = await f.text();
+    syncFromTextareas({nodes:true, elems:false, announce:true});
     logLine(`OK: Loaded nodes file "${f.name}" into textarea.`, "log-ok");
   }catch(err){ logLine(`ERROR: ${err.message}`, "log-err"); }
   setStatus("Idle"); el.fileNodes.value="";
@@ -929,14 +1000,13 @@ el.fileElems.addEventListener('change', async ()=>{
   if(!f) return;
   logClear(); setStatus("Reading segments...");
   try{
-    el.taElems.value = await f.text();      // load into textarea
-    syncFromTextareas({nodes:false, elems:true, announce:true}); // and install
+    el.taElems.value = await f.text();
+    syncFromTextareas({nodes:false, elems:true, announce:true});
     logLine(`OK: Loaded segments file "${f.name}" into textarea.`, "log-ok");
   }catch(err){ logLine(`ERROR: ${err.message}`, "log-err"); }
   setStatus("Idle"); el.fileElems.value="";
 });
 
-// Use buttons: still supported (explicit commit), but now optional
 el.btnParseNodes.addEventListener('click', ()=>{
   logClear(); setStatus("Syncing nodes...");
   try{ syncFromTextareas({nodes:true, elems:false, announce:true}); }
@@ -950,7 +1020,6 @@ el.btnParseElems.addEventListener('click', ()=>{
   setStatus("Idle");
 });
 
-// Reset buttons: now reset AND install immediately (no stale model possible)
 el.btnResetNodes.addEventListener('click', ()=>{
   logClear();
   el.taNodes.value = DEFAULT_NODES_TEXT;
@@ -974,11 +1043,10 @@ el.btnResetElems.addEventListener('click', ()=>{
   setStatus("Idle");
 });
 
-// Draw: SOLID FIX — re-sync from textareas first (both)
 el.btnDraw.addEventListener('click', ()=>{
   logClear(); setStatus("Syncing + validating...");
   try{
-    syncFromTextareas({nodes:true, elems:true, announce:false}); // always read current text
+    syncFromTextareas({nodes:true, elems:true, announce:false});
   }catch(err){
     logLine(`ERROR: ${err.message}`, "log-err");
     setStatus("Fix input");
@@ -988,18 +1056,17 @@ el.btnDraw.addEventListener('click', ()=>{
   if(!crossValidate()){ setStatus("Fix input"); return; }
 
   View.isInteractive = true;
-  fitView(Model.nodes);
+  fitView3D(Model.nodes);
   Model.isDrawn = true;
   drawPrimary();
   setStatus("Interactive");
-  logLine("OK: Frame drawn (always reflects current textareas).", "log-ok");
+  logLine("OK: Frame drawn in 3D viewport.", "log-ok");
 });
 
-// Solve: SOLID FIX — re-sync from textareas first (both), then solve ONCE
 el.btnSolve.addEventListener('click', ()=>{
   logClear(); setStatus("Syncing + validating...");
   try{
-    syncFromTextareas({nodes:true, elems:true, announce:false}); // always read current text
+    syncFromTextareas({nodes:true, elems:true, announce:false});
   }catch(err){
     logLine(`ERROR: ${err.message}`, "log-err");
     setStatus("Fix input");
@@ -1027,13 +1094,13 @@ el.btnSolve.addEventListener('click', ()=>{
     el.defScaleLabel.textContent = "0";
 
     logLine(`OK: Static solve complete. DOF ${sol.meta.ndof} (free ${sol.meta.nFree}, fixed ${sol.meta.nFixed}).`, "log-ok");
-    logLine(`Displacements (expanded): Max |u| = ${disp.maxMag.val} at ${disp.maxMag.label}`, "log-ok");
-    logLine(`Displacements (expanded): Min |u| = ${disp.minMag.val} at ${disp.minMag.label}`, "log-ok");
-    logLine(`Stresses: Max sigma = ${stress.maxSig.val} at ${stress.maxSig.at}`, "log-ok");
-    logLine(`Stresses: Min sigma = ${stress.minSig.val} at ${stress.minSig.at}`, "log-ok");
+    logLine(`Displacements (expanded): Max |u| = ${disp.maxMag.val.toFixed(4)} at ${disp.maxMag.label}`, "log-ok");
+    logLine(`Displacements (expanded): Min |u| = ${disp.minMag.val.toFixed(4)} at ${disp.minMag.label}`, "log-ok");
+    logLine(`Stresses: Max sigma = ${stress.maxSig.val.toFixed(2)} at ${stress.maxSig.at}`, "log-ok");
+    logLine(`Stresses: Min sigma = ${stress.minSig.val.toFixed(2)} at ${stress.minSig.at}`, "log-ok");
 
     View.isInteractive = true;
-    fitView(Model.nodes);
+    fitView3D(Model.nodes);
     Model.isDrawn = true;
     drawPrimary();
     setStatus("Solved (use deflection scale slider)");
@@ -1049,39 +1116,73 @@ el.defScale.addEventListener('input', ()=>{
 });
 
 /* =========================
-   Pan/zoom
+   3D Camera Controls
    ========================= */
 function canvasPointFromEvent(evt){
   const r = el.canvas.getBoundingClientRect();
-  return { x:(evt.clientX-r.left)*(el.canvas.width/r.width), y:(evt.clientY-r.top)*(el.canvas.height/r.height) };
+  return {
+    x:(evt.clientX-r.left)*(el.canvas.width/r.width),
+    y:(evt.clientY-r.top)*(el.canvas.height/r.height)
+  };
 }
+
 el.canvas.addEventListener('mousedown',(evt)=>{
   if(!View.isInteractive) return;
-  View.dragging=true;
-  const p=canvasPointFromEvent(evt);
-  View.dragStart.x=p.x; View.dragStart.y=p.y;
-  View.dragStart.panX=View.cam.panX; View.dragStart.panY=View.cam.panY;
+  evt.preventDefault();
+  View.dragging = true;
+  View.dragButton = evt.button;
+  const p = canvasPointFromEvent(evt);
+  View.dragStart.x = p.x;
+  View.dragStart.y = p.y;
+  View.dragStart.azimuth = View.cam.azimuth;
+  View.dragStart.elevation = View.cam.elevation;
+  View.dragStart.centerX = View.cam.centerX;
+  View.dragStart.centerY = View.cam.centerY;
+  View.dragStart.centerZ = View.cam.centerZ;
 });
+
 window.addEventListener('mouseup',()=>{ View.dragging=false; });
+
 window.addEventListener('mousemove',(evt)=>{
   if(!View.isInteractive || !View.dragging) return;
-  const p=canvasPointFromEvent(evt);
-  View.cam.panX = View.dragStart.panX + (p.x-View.dragStart.x);
-  View.cam.panY = View.dragStart.panY + (p.y-View.dragStart.y);
+  const p = canvasPointFromEvent(evt);
+  const dx = p.x - View.dragStart.x;
+  const dy = p.y - View.dragStart.y;
+
+  if(View.dragButton === 0){ // Left button - orbit
+    View.cam.azimuth = View.dragStart.azimuth + dx * 0.01;
+    View.cam.elevation = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, View.dragStart.elevation - dy * 0.01));
+  } else if(View.dragButton === 2){ // Right button - pan
+    const panSpeed = View.cam.distance * 0.002;
+    const right = {
+      x: Math.sin(View.cam.azimuth),
+      y: -Math.cos(View.cam.azimuth)
+    };
+    const up = {
+      x: Math.cos(View.cam.azimuth) * Math.sin(View.cam.elevation),
+      y: Math.sin(View.cam.azimuth) * Math.sin(View.cam.elevation),
+      z: Math.cos(View.cam.elevation)
+    };
+    
+    View.cam.centerX = View.dragStart.centerX - dx * panSpeed * right.x + dy * panSpeed * up.x;
+    View.cam.centerY = View.dragStart.centerY - dx * panSpeed * right.y + dy * panSpeed * up.y;
+    View.cam.centerZ = View.dragStart.centerZ + dy * panSpeed * up.z;
+  }
+  
   if(Model.isDrawn) drawPrimary();
 });
+
 el.canvas.addEventListener('wheel',(evt)=>{
   if(!View.isInteractive) return;
   evt.preventDefault();
-  const p=canvasPointFromEvent(evt);
-  const before=screenToWorld(p);
-  const zoomFactor=Math.exp(-evt.deltaY*0.0015);
-  View.cam.scale = clamp(View.cam.scale*zoomFactor, 1e-6, 1e6);
-  const after=screenToWorld(p);
-  View.cam.panX += (after.x-before.x)*View.cam.scale;
-  View.cam.panY += (-after.y+before.y)*View.cam.scale;
+  const zoomFactor = Math.exp(-evt.deltaY * 0.001);
+  View.cam.distance = Math.max(10, Math.min(10000, View.cam.distance * zoomFactor));
   if(Model.isDrawn) drawPrimary();
 },{passive:false});
+
+el.canvas.addEventListener('contextmenu',(evt)=>{
+  evt.preventDefault(); // Prevent context menu on right-click
+});
 
 /* =========================
    Startup
