@@ -1629,28 +1629,30 @@ function displayElementAnalysis(elemId, viewMode){
   // CRITICAL FIX: Calculate forces from FIRST subsegment only
   // The internal forces are constant along the primary element
   // Each subsegment has its own local forces, but we want the forces at the start of the PRIMARY element
-  const firstSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[0]);
-  const primaryElementForces = calculateElementStresses(Model.lastSolution.expanded, firstSubElemIdx, Model.lastSolution.U);
-  
-  // Get primary element properties
-  const ni_primary = Model.nodeById.get(elem.ni);
-  const nj_primary = Model.nodeById.get(elem.nj);
-  const dx = nj_primary.x - ni_primary.x;
-  const dy = nj_primary.y - ni_primary.y;
-  const dz = nj_primary.z - ni_primary.z;
-  const L_primary = Math.sqrt(dx*dx + dy*dy + dz*dz);
-  
-  // Extract CONSTANT internal forces (these don't change along element)
-  const N = primaryElementForces.forces.i.Fx;  // Axial force - CONSTANT
-  const Vy = primaryElementForces.forces.i.Fy; // Shear y - CONSTANT
-  const Vz = primaryElementForces.forces.i.Fz; // Shear z - CONSTANT
-  const Mx = primaryElementForces.forces.i.Mx; // Torsion - CONSTANT
-  
-  // Extract end moments (these VARY linearly)
-  const My_i = primaryElementForces.forces.i.My;
-  const Mz_i = primaryElementForces.forces.i.Mz;
-  const My_j = primaryElementForces.forces.j.My;
-  const Mz_j = primaryElementForces.forces.j.Mz;
+
+// Use FIRST subsegment for i-end forces/moments and LAST subsegment for j-end moments
+const firstSub = subElems[0];
+const lastSub  = subElems[subElems.length - 1];
+
+const idxFirst = Model.lastSolution.expanded.elems.indexOf(firstSub);
+const idxLast  = Model.lastSolution.expanded.elems.indexOf(lastSub);
+
+const firstForces = calculateElementStresses(Model.lastSolution.expanded, idxFirst, Model.lastSolution.U);
+const lastForces  = calculateElementStresses(Model.lastSolution.expanded, idxLast,  Model.lastSolution.U);
+
+// CONSTANT internal forces (no distributed loads): take from first subsegment i-end
+const N  = firstForces.forces.i.Fx;
+const Vy = firstForces.forces.i.Fy;
+const Vz = firstForces.forces.i.Fz;
+const Mx = firstForces.forces.i.Mx;
+
+// TRUE primary end moments:
+// - i-end from first subsegment i-end
+// - j-end from last subsegment j-end
+const My_i = firstForces.forces.i.My;
+const Mz_i = firstForces.forces.i.Mz;
+const My_j = lastForces.forces.j.My;
+const Mz_j = lastForces.forces.j.Mz;
   
   // Section properties (from primary element)
   const Ayz = elem.Ayz;
@@ -2502,5 +2504,6 @@ init();
 </script>
 </body>
 </html>
+
 
 
