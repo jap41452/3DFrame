@@ -2571,25 +2571,44 @@ function formatBCTooltip(node){
   return tooltip;
 }
 
+function fmt3(v, nd=3){
+  return `(${v.x.toFixed(nd)}, ${v.y.toFixed(nd)}, ${v.z.toFixed(nd)})`;
+}
+
+
 function formatElemTooltip(elem){
-  // Format element properties tooltip
   const ni = Model.nodeById.get(elem.ni);
   const nj = Model.nodeById.get(elem.nj);
-  
+
   let tooltip = `Segment ${elem.id}: Node ${elem.ni}→${elem.nj}`;
   tooltip += ` | E=${elem.E.toExponential(2)}, G=${elem.G.toExponential(2)}`;
   tooltip += ` | Izz=${elem.Izz}, Iyy=${elem.Iyy}, Jyz=${elem.Jyz}, Ayz=${elem.Ayz}`;
   tooltip += ` | Orient: (${elem.x3}, ${elem.y3}, ${elem.z3})`;
-  
-  // Calculate length
+
+  // Length
   if(ni && nj){
     const dx = nj.x - ni.x;
     const dy = nj.y - ni.y;
     const dz = nj.z - ni.z;
     const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
     tooltip += ` | Length=${len.toFixed(2)}`;
+
+    // ---- Direction cosines (local axes in global components) ----
+    // Uses same basis as your transformation definition (orientation point)
+    const basis = localAxesFromElem(ni, nj, elem);
+    if(basis.ok){
+      tooltip += `\nLocal axes (global):`;
+      tooltip += `\n  x̂ = ${fmt3(basis.xhat)}`;
+      tooltip += `\n  ŷ = ${fmt3(basis.yhat)}`;
+      tooltip += `\n  ẑ = ${fmt3(basis.zhat)}`;
+    } else if(basis.xhat){
+      tooltip += `\nLocal axes (global):`;
+      tooltip += `\n  x̂ = ${fmt3(basis.xhat)}`;
+      tooltip += `\n  ŷ/ẑ undefined`;
+      tooltip += `\n  ⚠ ${basis.warn || "Orientation issue"}`;
+    }
   }
-  
+
   return tooltip;
 }
 
@@ -2782,6 +2801,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
