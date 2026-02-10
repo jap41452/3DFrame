@@ -1214,22 +1214,104 @@ function build3DTransformationMatrix(ni, nj, x3, y3, z3){
   return T;
 }
 
+function buildBcByDof(expanded){
+  const N = expanded.nodes.length;
+  const ndof = 6*N;
+  const bcByDof = Array(ndof).fill(null);
+
+  for(let i=0;i<N;i++){
+    const bc = expanded.nodes[i].bc;
+    const base = 6*i;
+
+    if(bc.ux.prescribed) bcByDof[base+0] = bc.ux.value;
+    if(bc.uy.prescribed) bcByDof[base+1] = bc.uy.value;
+    if(bc.uz.prescribed) bcByDof[base+2] = bc.uz.value;
+
+    if(bc.rx.prescribed) bcByDof[base+3] = bc.rx.value;
+    if(bc.ry.prescribed) bcByDof[base+4] = bc.ry.value;
+    if(bc.rz.prescribed) bcByDof[base+5] = bc.rz.value;
+  }
+  return bcByDof;
+}
+
+function solveWithPrescribed(K, F, bcByDof){
+  const ndof = F.length;
+  const free = [];
+  const fixed = [];
+  const uFixed = [];
+
+  for(let i=0;i<ndof;i++){
+    const v = bcByDof[i];
+    if(v === null || v === undefined) free.push(i);
+    else { fixed.push(i); uFixed.push(v); }
+  }
+  if(free.length === 0) throw new Error("All DOFs are prescribed; nothing to solve.");
+
+  // rhs = Ff - Kfc * uc
+  const rhs = new Float64Array(free.length);
+  for(let a=0;a<free.length;a++){
+    const I = free[a];
+    let val = F[I];
+    const Ki = K[I];
+    for(let b=0;b<fixed.length;b++){
+      const J = fixed[b];
+      val -= Ki[J] * uFixed[b];
+    }
+    rhs[a] = val;
+  }
+
+  // Kff
+  const Kff = Array.from({length: free.length}, ()=> new Float64Array(free.length));
+  for(let a=0;a<free.length;a++){
+    const I = free[a];
+    const Ki = K[I];
+    const row = Kff[a];
+    for(let b=0;b<free.length;b++){
+      row[b] = Ki[free[b]];
+    }
+  }
+
+  const uf = solveLinearSystemDense(Kff, rhs);
+
+  const U = new Float64Array(ndof);
+  for(let b=0;b<fixed.length;b++) U[fixed[b]] = uFixed[b];
+  for(let a=0;a<free.length;a++) U[free[a]] = uf[a];
+
+  return {U, free, fixed};
+}
+
+function computeReactions(K, U, F){
+  const ndof = F.length;
+  const R = new Float64Array(ndof);
+  for(let i=0;i<ndof;i++){
+    let sum = 0;
+    const Ki = K[i];
+    for(let j=0;j<ndof;j++) sum += Ki[j]*U[j];
+    R[i] = sum - F[i];
+  }
+  return R;
+}
+
+
 function solveStaticExpanded(expanded){
   // Full 3D space frame solver with 6 DOF per node
+  // BC semantics:
+  //   - blank => free DOF
+  //   - nonblank (including 0.0) => prescribed DOF (condensed out)
+  // No hinges / no moment releases.
+
   const N = expanded.nodes.length;
-  const ndof = 6*N; // 6 DOF per node (ux, uy, uz, rx, ry, rz)
+  const ndof = 6*N;
 
   const K = Array.from({length: ndof}, ()=> new Float64Array(ndof));
   const F = new Float64Array(ndof);
-  const U = new Float64Array(ndof);
 
-  // Apply loads (6 DOF per node)
+  // Apply nodal FORCE loads only (no moment loads by design)
   for(let i=0;i<N;i++){
     const n = expanded.nodes[i];
-    F[6*i+0] += n.loads.fx;
-    F[6*i+1] += n.loads.fy;
-    F[6*i+2] += n.loads.fz;
-    // Moment loads would go in F[6*i+3], F[6*i+4], F[6*i+5]
+    F[6*i+0] += (n.loads.fx || 0);
+    F[6*i+1] += (n.loads.fy || 0);
+    F[6*i+2] += (n.loads.fz || 0);
   }
 
   // Assemble global stiffness matrix
@@ -1239,33 +1321,23 @@ function solveStaticExpanded(expanded){
     const dx = n2.x-n1.x, dy = n2.y-n1.y, dz = n2.z-n1.z;
     const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
     if(!(L>0)) throw new Error("Zero-length element detected in expanded mesh.");
-    
-    // Local stiffness matrix (12x12)
+
+    // Local stiffness (12x12)
     const kLocal = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
-    
-    // Check for moment releases at element ends (pinned connections)
-    // ONLY apply releases at PRIMARY nodes (actual supports), not internal subsegment nodes
 
-// IMPORTANT: Do NOT infer end releases from nodal BCs.
-// A free rotational DOF ≠ a hinge. Releases must be explicitly defined per element end.
-const kLocalModified = kLocal;
-
-    
     // Transformation matrix (12x12)
     const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
-    
-    // Transform to global: kg = T^T * kLocal * T
-    // First: tmp = kLocal * T
+
+    // Transform: kg = T^T * kLocal * T
     const tmp = Array.from({length:12}, ()=> new Float64Array(12));
     for(let i=0;i<12;i++){
       for(let j=0;j<12;j++){
         let sum = 0;
-        for(let m=0;m<12;m++) sum += kLocalModified[i][m] * T[m][j];
+        for(let m=0;m<12;m++) sum += kLocal[i][m] * T[m][j];
         tmp[i][j] = sum;
       }
     }
-    
-    // Second: kg = T^T * tmp
+
     const kg = Array.from({length:12}, ()=> new Float64Array(12));
     for(let i=0;i<12;i++){
       for(let j=0;j<12;j++){
@@ -1283,55 +1355,21 @@ const kLocalModified = kLocal;
     for(let a=0;a<12;a++){
       const Irow = dofs[a];
       const Krow = K[Irow];
-      for(let b=0;b<12;b++) Krow[dofs[b]] += kg[a][b];
+      const kga = kg[a];
+      for(let b=0;b<12;b++) Krow[dofs[b]] += kga[b];
     }
   }
 
-  // Apply boundary conditions (6 DOF per node)
-  const fixed=[], fixedVal=[], free=[];
-  for(let i=0;i<N;i++){
-    const bc = expanded.nodes[i].bc;
-    const d0=6*i+0, d1=6*i+1, d2=6*i+2, d3=6*i+3, d4=6*i+4, d5=6*i+5;
-    if(bc.ux.prescribed){ fixed.push(d0); fixedVal.push(bc.ux.value); } else free.push(d0);
-    if(bc.uy.prescribed){ fixed.push(d1); fixedVal.push(bc.uy.value); } else free.push(d1);
-    if(bc.uz.prescribed){ fixed.push(d2); fixedVal.push(bc.uz.value); } else free.push(d2);
-    if(bc.rx.prescribed){ fixed.push(d3); fixedVal.push(bc.rx.value); } else free.push(d3);
-    if(bc.ry.prescribed){ fixed.push(d4); fixedVal.push(bc.ry.value); } else free.push(d4);
-    if(bc.rz.prescribed){ fixed.push(d5); fixedVal.push(bc.rz.value); } else free.push(d5);
-  }
-  if(free.length===0) throw new Error("All DOFs are prescribed; nothing to solve.");
+  // Condense prescribed DOFs
+  const bcByDof = buildBcByDof(expanded);
+  const {U, free, fixed} = solveWithPrescribed(K, F, bcByDof);
 
-  console.log(`Total DOFs: ${ndof}, Free: ${free.length}, Fixed: ${fixed.length}`);
-  console.log(`First 10 free DOFs: ${free.slice(0,10).map(d => `${d}(N${Math.floor(d/6)}.${['ux','uy','uz','rx','ry','rz'][d%6]})`).join(', ')}`);
-  console.log(`First 10 fixed DOFs: ${fixed.slice(0,10).map(d => `${d}(N${Math.floor(d/6)}.${['ux','uy','uz','rx','ry','rz'][d%6]})`).join(', ')}`);
+  // Reactions (useful sanity check at prescribed DOFs)
+  const R = computeReactions(K, U, F);
 
-  const nF=free.length, nC=fixed.length;
-  const Rf=new Float64Array(nF);
-  for(let a=0;a<nF;a++){
-    const I=free[a];
-    let rhs=F[I];
-    for(let b=0;b<nC;b++){
-      const J=fixed[b];
-      rhs -= K[I][J]*fixedVal[b];
-    }
-    Rf[a]=rhs;
-  }
-  const Kff=Array.from({length:nF}, ()=> new Float64Array(nF));
-  for(let a=0;a<nF;a++){
-    const I=free[a];
-    for(let b=0;b<nF;b++){
-      const J=free[b];
-      Kff[a][b]=K[I][J];
-    }
-  }
-  
-  const Uf=solveLinearSystemDense(Kff,Rf);
-
-  for(let b=0;b<nC;b++) U[fixed[b]]=fixedVal[b];
-  for(let a=0;a<nF;a++) U[free[a]]=Uf[a];
-
-  return { U, F, K, meta:{N,ndof,nFree:nF,nFixed:nC} };
+  return { U, F, K, R, meta:{N, ndof, nFree: free.length, nFixed: fixed.length, free, fixed} };
 }
+
 
 function summarizeDisplacements(expanded, U){
   let maxMag = { val:-Infinity, label:"" };
@@ -1520,7 +1558,8 @@ function verifyElementForces(elemId){
   for(let i = 0; i < subElems.length; i++){
     const e = subElems[i];
     const elemIdx = Model.lastSolution.expanded.elems.indexOf(e);
-    const {fL} = elementEndForcesLocal(Model.lastSolution.expanded, elemIdx, Model.lastSolution.U);
+
+const {fL} = elementEndForcesLocal(Model.lastSolution.expanded, e, Model.lastSolution.U);
     
     forceData.push({
       subseg: i + 1,
@@ -1604,7 +1643,7 @@ function displayElementAnalysis(elemId, viewMode){
   // Extract CONSTANT internal forces (these don't change along element)
   const N = primaryElementForces.forces.i.Fx;  // Axial force - CONSTANT
   const Vy = primaryElementForces.forces.i.Fy; // Shear y - CONSTANT
-  const Vz = primaryElementForces.i.Fz;        // Shear z - CONSTANT
+  const Vz = primaryElementForces.forces.i.Fz; // Shear z - CONSTANT
   const Mx = primaryElementForces.forces.i.Mx; // Torsion - CONSTANT
   
   // Extract end moments (these VARY linearly)
@@ -2087,13 +2126,31 @@ el.btnSolve.addEventListener('click', ()=>{
 
     setStatus("Solving...");
     const sol = solveStaticExpanded(expanded);
+// Optional: quick BC reaction sanity check (prints a few)
+const R = sol.R;
+let shown = 0;
+for(let d=0; d<sol.meta.ndof && shown<8; d++){
+  // show only prescribed DOFs (condensed-out)
+  const iNode = Math.floor(d/6);
+  const dofName = ['ux','uy','uz','rx','ry','rz'][d%6];
+  const bc = expanded.nodes[iNode].bc;
+  const isPrescribed =
+    (d%6===0 && bc.ux.prescribed) || (d%6===1 && bc.uy.prescribed) || (d%6===2 && bc.uz.prescribed) ||
+    (d%6===3 && bc.rx.prescribed) || (d%6===4 && bc.ry.prescribed) || (d%6===5 && bc.rz.prescribed);
+
+  if(isPrescribed){
+    logLine(`Reaction @ ${expanded.nodes[iNode].label}.${dofName} = ${R[d].toFixed(4)}`, "log-ok");
+    shown++;
+  }
+}
 
     setStatus("Post-processing...");
     const disp = summarizeDisplacements(expanded, sol.U);
     const stress = summarizeStresses(expanded, sol.U);
 
-    Model.lastSolution = { expanded, U: sol.U, F: sol.F, meta: sol.meta, disp, stress };
-    renderSummary();
+    
+
+Model.lastSolution = { expanded, U: sol.U, F: sol.F, K: sol.K, R: sol.R, meta: sol.meta, disp, stress };
 
     el.defScale.disabled = false;
     el.defScaleInput.disabled = false;
@@ -2445,4 +2502,5 @@ init();
 </script>
 </body>
 </html>
+
 
