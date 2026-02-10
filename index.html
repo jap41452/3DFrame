@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Frame Analysis (v2.2: Physics Fixed)</title>
+<title>3D Frame Analysis (v2.3: Moment Releases Fixed)</title>
 <style>
   :root{
     --bg:#ffffff;
@@ -142,9 +142,19 @@
 
 <script>
 /* =========================
-   3D FRAME ANALYSIS v2.2
-   FIXED: Zero-clamping for pinned supports
-   FIXED: Iyy/Izz usage in stress formula
+   3D FRAME ANALYSIS v2
+   =========================
+   DEVELOPMENT STATUS:
+   ✓ Data model updated to full 3D (x,y,z coords, 6 DOF per node, 3D element properties)
+   ✓ Material type (brittle/ductile) removed - simple static & modes solver
+   ✓ 3D viewport with orbit/pan/zoom camera controls
+   
+   TODO (Next Steps):
+   - Implement 3D space frame element stiffness (12x12, using E, G, Ayz, Izz, Iyy, Jyz)
+   - Implement local coordinate transformation using x3,y3,z3 orientation point
+   - Update solver to use 6 DOF per node (ux,uy,uz, rx,ry,rz)
+   - Add modal analysis (eigenvalue solver for natural frequencies & mode shapes)
+   - Update stress recovery for 3D elements
    ========================= */
 
 /* =========================
@@ -488,6 +498,19 @@ function invalidateSolutionAndDefScale(){
 function installNodes(nodes){
   Model.nodes = nodes;
   Model.nodeById = new Map(nodes.map(n=>[n.id,n]));
+  
+  // Debug: log Node 1's BCs
+  const node1 = nodes.find(n => n.id === 1);
+  if(node1){
+    console.log("Node 1 BCs after parsing:");
+    console.log(`  ux: prescribed=${node1.ux.prescribed}, value=${node1.ux.value}`);
+    console.log(`  uy: prescribed=${node1.uy.prescribed}, value=${node1.uy.value}`);
+    console.log(`  uz: prescribed=${node1.uz.prescribed}, value=${node1.uz.value}`);
+    console.log(`  rx: prescribed=${node1.rx.prescribed}, value=${node1.rx.value}`);
+    console.log(`  ry: prescribed=${node1.ry.prescribed}, value=${node1.ry.value}`);
+    console.log(`  rz: prescribed=${node1.rz.prescribed}, value=${node1.rz.value}`);
+  }
+  
   Model.isDrawn = false;
   View.hoveredNode = null;
   View.pinnedNode = null;
@@ -885,9 +908,11 @@ function buildExpandedModel(nSub = 10){
 
   for(const pn of primaryNodesSorted){
     const idx = expanded.nodes.length;
+    console.log(`Adding primary node ${pn.id} at expanded index ${idx}, rx.prescribed=${pn.rx.prescribed}`);
     expanded.nodes.push({
       x: pn.x, y: pn.y, z: pn.z,
       label: `N${pn.id}`,
+      isPrimary: true,  // Mark as primary node
       bc: {
         ux: { prescribed: pn.ux.prescribed, value: pn.ux.value },
         uy: { prescribed: pn.uy.prescribed, value: pn.uy.value },
@@ -918,6 +943,7 @@ function buildExpandedModel(nSub = 10){
         y: nI.y + t*(nJ.y - nI.y),
         z: nI.z + t*(nJ.z - nI.z),
         label: `S${pe.id}.${k}`,
+        isPrimary: false,  // Mark as internal subsegment node
         bc: { 
           ux:{prescribed:false,value:0}, uy:{prescribed:false,value:0}, uz:{prescribed:false,value:0},
           rx:{prescribed:false,value:0}, ry:{prescribed:false,value:0}, rz:{prescribed:false,value:0}
@@ -953,7 +979,11 @@ function solveLinearSystemDense(A, b){
       const v = Math.abs(M[i][k]);
       if(v>max){ max=v; piv=i; }
     }
-    if(max === 0 || !Number.isFinite(max)) throw new Error("Singular or ill-conditioned stiffness matrix (pivot=0).");
+    if(max === 0 || !Number.isFinite(max)){
+      console.error(`Singular matrix at DOF ${k}, max pivot = ${max}`);
+      console.error(`This corresponds to: Node ${Math.floor(k/6)}, DOF ${k%6} (0=ux,1=uy,2=uz,3=rx,4=ry,5=rz)`);
+      throw new Error("Singular or ill-conditioned stiffness matrix (pivot=0).");
+    }
 
     if(piv !== k){
       const tmpRow = M[k]; M[k] = M[piv]; M[piv] = tmpRow;
@@ -1022,6 +1052,98 @@ function elementLocalStiffness3D(E, G, Ayz, Izz, Iyy, Jyz, L){
   k[4][2] = -6*EIyy_L2;   k[4][4] = 4*EIyy_L;     k[4][8] = 6*EIyy_L2;    k[4][10] = 2*EIyy_L;
   k[8][2] = -12*EIyy_L3;  k[8][4] = 6*EIyy_L2;    k[8][8] = 12*EIyy_L3;   k[8][10] = 6*EIyy_L2;
   k[10][2] = -6*EIyy_L2;  k[10][4] = 2*EIyy_L;    k[10][8] = 6*EIyy_L2;   k[10][10] = 4*EIyy_L;
+  
+  return k;
+}
+
+function applyMomentReleases(kLocal, release_i, release_j, E, Izz, Iyy, L){
+  // Apply moment releases for pinned connections
+  // release_i/j: {rx, ry, rz} - true if that rotation is FREE (pinned)
+  
+  // Make a copy to modify
+  const k = Array.from({length: 12}, (_, i) => Float64Array.from(kLocal[i]));
+  
+  const EIyy = E * Iyy;
+  const EIyy_L3 = EIyy / (L*L*L);
+  const EIyy_L2 = EIyy / (L*L);
+  const EIyy_L = EIyy / L;
+  
+  const EIzz = E * Izz;
+  const EIzz_L3 = EIzz / (L*L*L);
+  const EIzz_L2 = EIzz / (L*L);
+  const EIzz_L = EIzz / L;
+  
+  // Release Mx (torsion) at node i (DOF 3)
+  if(release_i.rx){
+    // Zero out row and column for DOF 3
+    for(let j = 0; j < 12; j++){
+      k[3][j] = 0;
+      k[j][3] = 0;
+    }
+  }
+  
+  // Release Mx (torsion) at node j (DOF 9)
+  if(release_j.rx){
+    for(let j = 0; j < 12; j++){
+      k[9][j] = 0;
+      k[j][9] = 0;
+    }
+  }
+  
+  // Release My (bending about y-axis) at node i (DOF 4)
+  if(release_i.ry){
+    // For pin at i-end: beam becomes cantilever from j
+    // Modify bending in x-z plane (DOF 2, 4, 8, 10)
+    k[2][2] = 3*EIyy_L3;   k[2][4] = 0;            k[2][8] = -3*EIyy_L3;  k[2][10] = 3*EIyy_L2;
+    k[4][2] = 0;           k[4][4] = 0;            k[4][8] = 0;           k[4][10] = 0;
+    k[8][2] = -3*EIyy_L3;  k[8][4] = 0;            k[8][8] = 3*EIyy_L3;   k[8][10] = -3*EIyy_L2;
+    k[10][2] = 3*EIyy_L2;  k[10][4] = 0;           k[10][8] = -3*EIyy_L2; k[10][10] = 3*EIyy_L;
+  }
+  
+  // Release My (bending about y-axis) at node j (DOF 10)
+  if(release_j.ry){
+    // For pin at j-end: beam becomes cantilever from i
+    k[2][2] = 3*EIyy_L3;   k[2][4] = -3*EIyy_L2;   k[2][8] = -3*EIyy_L3;  k[2][10] = 0;
+    k[4][2] = -3*EIyy_L2;  k[4][4] = 3*EIyy_L;     k[4][8] = 3*EIyy_L2;   k[4][10] = 0;
+    k[8][2] = -3*EIyy_L3;  k[8][4] = 3*EIyy_L2;    k[8][8] = 3*EIyy_L3;   k[8][10] = 0;
+    k[10][2] = 0;          k[10][4] = 0;           k[10][8] = 0;          k[10][10] = 0;
+  }
+  
+  // Release Mz (bending about z-axis) at node i (DOF 5)
+  if(release_i.rz){
+    // For pin at i-end: modify bending in x-y plane (DOF 1, 5, 7, 11)
+    k[1][1] = 3*EIzz_L3;   k[1][5] = 0;            k[1][7] = -3*EIzz_L3;  k[1][11] = 3*EIzz_L2;
+    k[5][1] = 0;           k[5][5] = 0;            k[5][7] = 0;           k[5][11] = 0;
+    k[7][1] = -3*EIzz_L3;  k[7][5] = 0;            k[7][7] = 3*EIzz_L3;   k[7][11] = -3*EIzz_L2;
+    k[11][1] = 3*EIzz_L2;  k[11][5] = 0;           k[11][7] = -3*EIzz_L2; k[11][11] = 3*EIzz_L;
+  }
+  
+  // Release Mz (bending about z-axis) at node j (DOF 11)
+  if(release_j.rz){
+    // For pin at j-end
+    k[1][1] = 3*EIzz_L3;   k[1][5] = -3*EIzz_L2;   k[1][7] = -3*EIzz_L3;  k[1][11] = 0;
+    k[5][1] = -3*EIzz_L2;  k[5][5] = 3*EIzz_L;     k[5][7] = 3*EIzz_L2;   k[5][11] = 0;
+    k[7][1] = -3*EIzz_L3;  k[7][5] = 3*EIzz_L2;    k[7][7] = 3*EIzz_L3;   k[7][11] = 0;
+    k[11][1] = 0;          k[11][5] = 0;           k[11][7] = 0;          k[11][11] = 0;
+  }
+  
+  // Handle both ends pinned cases
+  if(release_i.ry && release_j.ry){
+    // Both ends pinned in My: simply supported beam in x-z plane
+    // Use 12EI/L^3 for deflection coupling, but zero moment terms
+    k[2][2] = 12*EIyy_L3;   k[2][4] = 0;   k[2][8] = -12*EIyy_L3;  k[2][10] = 0;
+    k[4][2] = 0;            k[4][4] = 0;   k[4][8] = 0;            k[4][10] = 0;
+    k[8][2] = -12*EIyy_L3;  k[8][4] = 0;   k[8][8] = 12*EIyy_L3;   k[8][10] = 0;
+    k[10][2] = 0;           k[10][4] = 0;  k[10][8] = 0;           k[10][10] = 0;
+  }
+  
+  if(release_i.rz && release_j.rz){
+    // Both ends pinned in Mz: simply supported beam in x-y plane
+    k[1][1] = 12*EIzz_L3;   k[1][5] = 0;   k[1][7] = -12*EIzz_L3;  k[1][11] = 0;
+    k[5][1] = 0;            k[5][5] = 0;   k[5][7] = 0;            k[5][11] = 0;
+    k[7][1] = -12*EIzz_L3;  k[7][5] = 0;   k[7][7] = 12*EIzz_L3;   k[7][11] = 0;
+    k[11][1] = 0;           k[11][5] = 0;  k[11][7] = 0;           k[11][11] = 0;
+  }
   
   return k;
 }
@@ -1121,6 +1243,14 @@ function solveStaticExpanded(expanded){
     // Local stiffness matrix (12x12)
     const kLocal = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
     
+    // Check for moment releases at element ends (pinned connections)
+    // ONLY apply releases at PRIMARY nodes (actual supports), not internal subsegment nodes
+
+// IMPORTANT: Do NOT infer end releases from nodal BCs.
+// A free rotational DOF ≠ a hinge. Releases must be explicitly defined per element end.
+const kLocalModified = kLocal;
+
+    
     // Transformation matrix (12x12)
     const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
     
@@ -1130,7 +1260,7 @@ function solveStaticExpanded(expanded){
     for(let i=0;i<12;i++){
       for(let j=0;j<12;j++){
         let sum = 0;
-        for(let m=0;m<12;m++) sum += kLocal[i][m] * T[m][j];
+        for(let m=0;m<12;m++) sum += kLocalModified[i][m] * T[m][j];
         tmp[i][j] = sum;
       }
     }
@@ -1170,6 +1300,10 @@ function solveStaticExpanded(expanded){
     if(bc.rz.prescribed){ fixed.push(d5); fixedVal.push(bc.rz.value); } else free.push(d5);
   }
   if(free.length===0) throw new Error("All DOFs are prescribed; nothing to solve.");
+
+  console.log(`Total DOFs: ${ndof}, Free: ${free.length}, Fixed: ${fixed.length}`);
+  console.log(`First 10 free DOFs: ${free.slice(0,10).map(d => `${d}(N${Math.floor(d/6)}.${['ux','uy','uz','rx','ry','rz'][d%6]})`).join(', ')}`);
+  console.log(`First 10 fixed DOFs: ${fixed.slice(0,10).map(d => `${d}(N${Math.floor(d/6)}.${['ux','uy','uz','rx','ry','rz'][d%6]})`).join(', ')}`);
 
   const nF=free.length, nC=fixed.length;
   const Rf=new Float64Array(nF);
@@ -1272,22 +1406,15 @@ function calculateElementStresses(expanded, elemIndex, U){
     }
   };
   
-  // FORCE CLAMPING (Sanitize tiny values to zero)
-  const sanitize = (v) => (Math.abs(v) < 1e-9 ? 0.0 : v);
-  forces.i.Fx = sanitize(forces.i.Fx); forces.i.Fy = sanitize(forces.i.Fy); forces.i.Fz = sanitize(forces.i.Fz);
-  forces.i.Mx = sanitize(forces.i.Mx); forces.i.My = sanitize(forces.i.My); forces.i.Mz = sanitize(forces.i.Mz);
-  forces.j.Fx = sanitize(forces.j.Fx); forces.j.Fy = sanitize(forces.j.Fy); forces.j.Fz = sanitize(forces.j.Fz);
-  forces.j.Mx = sanitize(forces.j.Mx); forces.j.My = sanitize(forces.j.My); forces.j.Mz = sanitize(forces.j.Mz);
-
   // AXIAL STRESS - CONSTANT along element (no distributed load)
   // Using node i value (should equal -node j value for equilibrium)
-  const N = forces.i.Fx; // Axial force (tension positive)
+  const N = fL[0]; // Axial force (tension positive)
   const sigma_axial = N / e.Ayz;
   
   // SHEAR FORCES - CONSTANT along element (no distributed load)
   // Using node i values
-  const Vy = forces.i.Fy; // Shear force in local y
-  const Vz = forces.i.Fz; // Shear force in local z
+  const Vy = fL[1]; // Shear force in local y
+  const Vz = fL[2]; // Shear force in local z
   
   // Average shear stress (simplified - could use shape factor for more accuracy)
   const tau_y = Math.abs(Vy) / e.Ayz;
@@ -1295,17 +1422,17 @@ function calculateElementStresses(expanded, elemIndex, U){
   const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
   
   // TORSION - CONSTANT along element
-  const Mx = forces.i.Mx; // Torsional moment
+  const Mx = fL[3]; // Torsional moment
   // Approximate distance to extreme fiber for torsion
   const c_torsion = Math.sqrt(Math.max(e.Iyy, e.Izz) / e.Ayz);
   const tau_torsion = Math.abs(Mx) * c_torsion / e.Jyz;
   
   // BENDING MOMENTS - These are the values AT NODE i
   // For stress variation along element, caller must interpolate
-  const My_i = forces.i.My; // Moment about local y-axis at node i
-  const Mz_i = forces.i.Mz; // Moment about local z-axis at node i
-  const My_j = forces.j.My; // Moment about local y-axis at node j
-  const Mz_j = forces.j.Mz; // Moment about local z-axis at node j
+  const My_i = fL[4]; // Moment about local y-axis at node i
+  const Mz_i = fL[5]; // Moment about local z-axis at node i
+  const My_j = fL[10]; // Moment about local y-axis at node j
+  const Mz_j = fL[11]; // Moment about local z-axis at node j
   
   // Estimate distance to extreme fiber (rectangular section assumption)
   // For more accuracy, would need actual section dimensions
@@ -1313,14 +1440,12 @@ function calculateElementStresses(expanded, elemIndex, U){
   const c_z = Math.sqrt(e.Izz / e.Ayz); // Distance in z-direction
   
   // Bending stresses at node i
-  // FIXED: My bends in X-Z plane, resisted by Iyy. Distance is c_z.
-  const sigma_bend_y_i = Math.abs(My_i) * c_z / e.Iyy; 
-  // FIXED: Mz bends in X-Y plane, resisted by Izz. Distance is c_y.
-  const sigma_bend_z_i = Math.abs(Mz_i) * c_y / e.Izz; 
+  const sigma_bend_y_i = Math.abs(My_i) * c_z / e.Izz;
+  const sigma_bend_z_i = Math.abs(Mz_i) * c_y / e.Iyy;
   
   // Bending stresses at node j
-  const sigma_bend_y_j = Math.abs(My_j) * c_z / e.Iyy;
-  const sigma_bend_z_j = Math.abs(Mz_j) * c_y / e.Izz;
+  const sigma_bend_y_j = Math.abs(My_j) * c_z / e.Izz;
+  const sigma_bend_z_j = Math.abs(Mz_j) * c_y / e.Iyy;
   
   // Combined stresses at node i (extreme fibers)
   const sigma_max_i = sigma_axial + sigma_bend_y_i + sigma_bend_z_i;
@@ -1462,15 +1587,11 @@ function displayElementAnalysis(elemId, viewMode){
     return;
   }
   
-  // We fetch data from the START of the first subsegment and the END of the last subsegment.
+  // CRITICAL FIX: Calculate forces from FIRST subsegment only
+  // The internal forces are constant along the primary element
+  // Each subsegment has its own local forces, but we want the forces at the start of the PRIMARY element
   const firstSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[0]);
-  const lastSubElemIdx = Model.lastSolution.expanded.elems.indexOf(subElems[subElems.length-1]);
-  
-  // Forces at Start of Beam (from First Subsegment Node i)
-  const forcesStart = calculateElementStresses(Model.lastSolution.expanded, firstSubElemIdx, Model.lastSolution.U);
-  
-  // Forces at End of Beam (from Last Subsegment Node j)
-  const forcesEnd = calculateElementStresses(Model.lastSolution.expanded, lastSubElemIdx, Model.lastSolution.U);
+  const primaryElementForces = calculateElementStresses(Model.lastSolution.expanded, firstSubElemIdx, Model.lastSolution.U);
   
   // Get primary element properties
   const ni_primary = Model.nodeById.get(elem.ni);
@@ -1481,24 +1602,24 @@ function displayElementAnalysis(elemId, viewMode){
   const L_primary = Math.sqrt(dx*dx + dy*dy + dz*dz);
   
   // Extract CONSTANT internal forces (these don't change along element)
-  const N = forcesStart.forces.i.Fx;  // Axial force - CONSTANT
-  const Vy = forcesStart.forces.i.Fy; // Shear y - CONSTANT
-  const Vz = forcesStart.forces.i.Fz; // Shear z - CONSTANT
-  const Mx = forcesStart.forces.i.Mx; // Torsion - CONSTANT
+  const N = primaryElementForces.forces.i.Fx;  // Axial force - CONSTANT
+  const Vy = primaryElementForces.forces.i.Fy; // Shear y - CONSTANT
+  const Vz = primaryElementForces.i.Fz;        // Shear z - CONSTANT
+  const Mx = primaryElementForces.forces.i.Mx; // Torsion - CONSTANT
   
-  // Extract end moments (Linearly Interpolated between Start and End of Beam)
-  const My_start = forcesStart.forces.i.My;
-  const Mz_start = forcesStart.forces.i.Mz;
-  const My_end = forcesEnd.forces.j.My; // Taking force from node j of last segment
-  const Mz_end = forcesEnd.forces.j.Mz; // Taking force from node j of last segment
+  // Extract end moments (these VARY linearly)
+  const My_i = primaryElementForces.forces.i.My;
+  const Mz_i = primaryElementForces.forces.i.Mz;
+  const My_j = primaryElementForces.forces.j.My;
+  const Mz_j = primaryElementForces.forces.j.Mz;
   
   // Section properties (from primary element)
   const Ayz = elem.Ayz;
   const Izz = elem.Izz;
   const Iyy = elem.Iyy;
   const Jyz = elem.Jyz;
-  const c_y = forcesStart.sectionProperties.c_y;
-  const c_z = forcesStart.sectionProperties.c_z;
+  const c_y = primaryElementForces.sectionProperties.c_y;
+  const c_z = primaryElementForces.sectionProperties.c_z;
   
   // CONSTANT stresses (independent of position)
   const sigma_axial = N / Ayz;
@@ -1515,15 +1636,13 @@ function displayElementAnalysis(elemId, viewMode){
   for(let i = 0; i < numPoints; i++){
     const xi = i / (numPoints - 1); // Position from 0 to 1
     
-    // Linearly interpolate moments over TOTAL length
-    const My_xi = My_start + xi * (My_end - My_start);
-    const Mz_xi = Mz_start + xi * (Mz_end - Mz_start);
+    // Linearly interpolate moments
+    const My_xi = My_i + xi * (My_j - My_i);
+    const Mz_xi = Mz_i + xi * (Mz_j - Mz_i);
     
     // Bending stresses at this position
-    // FIXED: My resisted by Iyy, distance c_z
-    const sigma_bend_My = Math.abs(My_xi) * c_z / Iyy;
-    // FIXED: Mz resisted by Izz, distance c_y
-    const sigma_bend_Mz = Math.abs(Mz_xi) * c_y / Izz;
+    const sigma_bend_My = Math.abs(My_xi) * c_z / Izz;
+    const sigma_bend_Mz = Math.abs(Mz_xi) * c_y / Iyy;
     
     // Combined stresses (extreme fibers)
     const sigma_max = sigma_axial + sigma_bend_My + sigma_bend_Mz;
@@ -1533,13 +1652,13 @@ function displayElementAnalysis(elemId, viewMode){
       position: xi,
       My: My_xi,
       Mz: Mz_xi,
-      sigma_axial: sigma_axial,       // CONSTANT
+      sigma_axial: sigma_axial,      // CONSTANT
       sigma_bend_My: sigma_bend_My,
       sigma_bend_Mz: sigma_bend_Mz,
       sigma_max: sigma_max,
       sigma_min: sigma_min,
-      tau_shear: tau_shear,           // CONSTANT
-      tau_torsion: tau_torsion        // CONSTANT
+      tau_shear: tau_shear,          // CONSTANT
+      tau_torsion: tau_torsion       // CONSTANT
     });
   }
   
@@ -1599,6 +1718,19 @@ function buildStressTableCorrected(stressProfile){
   html += `<div class="stressValue">Axial*: ${sigma_axial.toFixed(2)} | Shear*: ${tau_shear.toFixed(2)} | Torsion*: ${tau_torsion.toFixed(2)}</div>`;
   html += `<div class="stressValue">Combined Envelope: Max=${maxCombined.toFixed(2)}, Min=${minCombined.toFixed(2)}</div>`;
   html += '</div>';
+  
+  // DIAGNOSTIC: Verify subsegment forces if available
+  if(View.selectedSegmentForAnalysis !== null){
+    const verification = verifyElementForces(View.selectedSegmentForAnalysis);
+    if(verification && !verification.consistency.axial.isConstant){
+      html += '<div style="margin-top:8px; padding:8px; background:#fee; border:1px solid #fcc; border-radius:4px; font-size:10px;">';
+      html += '<strong>⚠️ SOLVER ERROR DETECTED:</strong><br>';
+      html += `Axial force varies by ${verification.consistency.axial.range.toFixed(2)} across subsegments.<br>`;
+      html += `This violates equilibrium and indicates a bug in the solver or force recovery.<br>`;
+      html += '<button onclick="console.log(verifyElementForces(' + View.selectedSegmentForAnalysis + '))" style="margin-top:4px; padding:2px 6px; font-size:10px;">Log Details to Console</button>';
+      html += '</div>';
+    }
+  }
   
   return html;
 }
@@ -1785,6 +1917,70 @@ function buildCombinedStressDiagramCorrected(stressProfile, elem){
   html += '</svg>';
   
   return html;
+}
+
+function displayElementAnalysis1(elemId, viewMode){
+  // Display analysis for a primary segment with selectable view modes
+  if(!Model.lastSolution){
+    el.stressContent.innerHTML = '<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">Run Static Solve first to analyze stresses.</div>';
+    el.stressViewSelector.disabled = true;
+    return;
+  }
+  
+  const elem = Model.elemById.get(elemId);
+  if(!elem){
+    el.stressContent.innerHTML = '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">Element not found.</div>';
+    el.stressViewSelector.disabled = true;
+    return;
+  }
+  
+  // Enable view selector
+  el.stressViewSelector.disabled = false;
+  
+  // Find all expanded sub-elements for this primary element
+  const subElems = Model.lastSolution.expanded.elems.filter(e => e.primaryElemId === elemId);
+  
+  if(subElems.length === 0){
+    el.stressContent.innerHTML = '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">No subsegments found.</div>';
+    return;
+  }
+  
+  // Calculate stresses for all subsegments
+  const stressData = subElems.map((e, idx) => {
+    const elemIdx = Model.lastSolution.expanded.elems.indexOf(e);
+    const data = calculateElementStresses(Model.lastSolution.expanded, elemIdx, Model.lastSolution.U);
+    const ni = Model.lastSolution.expanded.nodes[e.ni];
+    const nj = Model.lastSolution.expanded.nodes[e.nj];
+    
+    // Position along primary element (0 to 1)
+    const position = idx / subElems.length;
+    
+    return {
+      index: idx,
+      position: position,
+      data: data,
+      ni: ni,
+      nj: nj
+    };
+  });
+  
+  // Get the mode to display
+  const mode = viewMode || el.stressViewSelector.value;
+  
+  let html = `<div class="stressLabel">Segment ${elemId}: Node ${elem.ni} → ${elem.nj}</div>`;
+  html += `<div class="stressValue" style="margin-bottom:10px;">${subElems.length} subsegments analyzed</div>`;
+  
+  if(mode === 'table'){
+    html += buildStressTable(stressData);
+  } else if(mode === 'moment'){
+    html += buildMomentDiagrams(stressData, elem);
+  } else if(mode === 'shear'){
+    html += buildShearDiagrams(stressData, elem);
+  } else if(mode === 'combined'){
+    html += buildCombinedStressDiagram(stressData, elem);
+  }
+  
+  el.stressContent.innerHTML = html;
 }
 
 /* =========================
@@ -2249,3 +2445,4 @@ init();
 </script>
 </body>
 </html>
+
