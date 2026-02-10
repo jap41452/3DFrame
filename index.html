@@ -1386,31 +1386,32 @@ function summarizeDisplacements(expanded, U){
 }
 
 function elementEndForcesLocal(expanded, e, U){
-  // Recover element end forces in local coordinates
   const n1 = expanded.nodes[e.ni];
   const n2 = expanded.nodes[e.nj];
   const dx = n2.x-n1.x, dy = n2.y-n1.y, dz = n2.z-n1.z;
   const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
 
-  // Get global displacements (12 DOF)
+  // Global element displacement vector (12)
   const uG = new Float64Array(12);
   for(let i=0; i<6; i++){
-    uG[i] = U[6*e.ni + i];
+    uG[i]   = U[6*e.ni + i];
     uG[i+6] = U[6*e.nj + i];
   }
 
-  // Transform to local coordinates
+  // Transformation matrix (global -> local)
   const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
+
+  // ✅ Correct: uL = T * uG   (NOT T^T * uG)
   const uL = new Float64Array(12);
   for(let i=0; i<12; i++){
     let sum = 0;
     for(let j=0; j<12; j++){
-      sum += T[j][i] * uG[j];
+      sum += T[i][j] * uG[j];
     }
     uL[i] = sum;
   }
 
-  // Compute local forces: fL = kL * uL
+  // Local end forces
   const kL = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
   const fL = new Float64Array(12);
   for(let i=0; i<12; i++){
@@ -1420,9 +1421,10 @@ function elementEndForcesLocal(expanded, e, U){
     }
     fL[i] = sum;
   }
-  
+
   return { fL, L };
 }
+
 
 function calculateElementStresses(expanded, elemIndex, U){
   // Calculate stresses at a specific point along an expanded element
@@ -2516,6 +2518,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
