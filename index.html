@@ -1654,13 +1654,25 @@ const Mz_i = firstForces.forces.i.Mz;
 const My_j = lastForces.forces.j.My;
 const Mz_j = lastForces.forces.j.Mz;
   
-  // Section properties (from primary element)
+ // Calculate primary element length
+const ni_primary = Model.nodeById.get(elem.ni);
+const nj_primary = Model.nodeById.get(elem.nj);
+const dx = nj_primary.x - ni_primary.x;
+const dy = nj_primary.y - ni_primary.y;
+const dz = nj_primary.z - ni_primary.z;
+const L_primary = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+
+
+ // Section properties (from primary element)
   const Ayz = elem.Ayz;
   const Izz = elem.Izz;
   const Iyy = elem.Iyy;
   const Jyz = elem.Jyz;
-  const c_y = primaryElementForces.sectionProperties.c_y;
-  const c_z = primaryElementForces.sectionProperties.c_z;
+  
+const c_y = firstForces.sectionProperties.c_y;
+const c_z = firstForces.sectionProperties.c_z;
+
   
   // CONSTANT stresses (independent of position)
   const sigma_axial = N / Ayz;
@@ -2504,6 +2516,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
