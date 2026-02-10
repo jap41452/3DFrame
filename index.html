@@ -785,6 +785,264 @@ function drawBCSymbol(x, y, z, bc){
   
   ctx.restore();
 }
+/* =========================
+   Local/Global Axis Visualization (Option A)
+   ========================= */
+
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+function norm3(v){
+  const L = Math.hypot(v.x, v.y, v.z);
+  if(L < 1e-14) return {x:0,y:0,z:0, L:0};
+  return {x:v.x/L, y:v.y/L, z:v.z/L, L};
+}
+
+function sub3(a,b){ return {x:a.x-b.x, y:a.y-b.y, z:a.z-b.z}; }
+function add3(a,b){ return {x:a.x+b.x, y:a.y+b.y, z:a.z+b.z}; }
+function mul3(a,s){ return {x:a.x*s, y:a.y*s, z:a.z*s}; }
+function dot3(a,b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
+function cross3(a,b){
+  return {
+    x: a.y*b.z - a.z*b.y,
+    y: a.z*b.x - a.x*b.z,
+    z: a.x*b.y - a.y*b.x
+  };
+}
+
+function drawArrow2D(p0, p1, color="rgba(0,0,0,0.85)", width=2, headLen=9, headWid=5){
+  const dx = p1.x - p0.x;
+  const dy = p1.y - p0.y;
+  const L = Math.hypot(dx, dy);
+  if(L < 1e-6) return;
+
+  const ux = dx / L, uy = dy / L;
+  const nx = -uy, ny = ux;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle   = color;
+  ctx.lineWidth   = width;
+
+  // shaft
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.stroke();
+
+  // head
+  const bx = p1.x - headLen*ux;
+  const by = p1.y - headLen*uy;
+
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(bx + headWid*nx, by + headWid*ny);
+  ctx.lineTo(bx - headWid*nx, by - headWid*ny);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawLabel2D(p, text, color="rgba(0,0,0,0.85)"){
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.font = "11px ui-sans-serif, system-ui, Segoe UI, Roboto, Arial";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, p.x + 4, p.y);
+  ctx.restore();
+}
+
+/**
+ * Compute local unit axes for an element end definition:
+ *  x̂ along member
+ *  ẑ from orientation point projected normal to x̂
+ *  ŷ = ẑ × x̂
+ * Returns {xhat,yhat,zhat, ok, warn}
+ */
+function localAxesFromElem(n1, n2, e){
+  const p1 = {x:n1.x, y:n1.y, z:n1.z};
+  const p2 = {x:n2.x, y:n2.y, z:n2.z};
+
+  const ex = sub3(p2, p1);
+  const xN = norm3(ex);
+  if(xN.L < 1e-10) return {ok:false, warn:"Zero-length element", xhat:null,yhat:null,zhat:null};
+
+  const xhat = {x:xN.x, y:xN.y, z:xN.z};
+
+  // orientation point in global
+  const p3 = {x:e.x3, y:e.y3, z:e.z3};
+
+  // v = p3 - p1, project out x component
+  const v  = sub3(p3, p1);
+  const vpar = mul3(xhat, dot3(v, xhat));
+  const vperp = sub3(v, vpar);
+  const zN = norm3(vperp);
+
+  // If nearly collinear, local y/z are unstable
+  const colTol = 1e-8 * (xN.L + 1); // scale-ish
+  if(zN.L < colTol){
+    return {ok:false, warn:"Orientation point nearly collinear with element axis (local y/z unstable).", xhat, yhat:null, zhat:null};
+  }
+
+  let zhat = {x:zN.x, y:zN.y, z:zN.z};
+
+  // y = z × x (right-handed)
+  let yhat = cross3(zhat, xhat);
+  const yN = norm3(yhat);
+  if(yN.L < 1e-12){
+    return {ok:false, warn:"Local y axis degenerate (check orientation point).", xhat, yhat:null, zhat};
+  }
+  yhat = {x:yN.x, y:yN.y, z:yN.z};
+
+  // Re-orthonormalize z = x × y (reduces numerical drift)
+  zhat = cross3(xhat, yhat);
+  const zN2 = norm3(zhat);
+  zhat = {x:zN2.x, y:zN2.y, z:zN2.z};
+
+  return {ok:true, warn:null, xhat, yhat, zhat};
+}
+
+function drawLocalAxesForSelectedElem(){
+  // Show pinned element if present, else hovered element
+  const elemId = (View.pinnedElem != null) ? View.pinnedElem : View.hoveredElem;
+  if(elemId == null) return;
+
+  const e = Model.elemById.get(elemId);
+  if(!e) return;
+
+  const n1 = Model.nodeById.get(e.ni);
+  const n2 = Model.nodeById.get(e.nj);
+  if(!n1 || !n2) return;
+
+  // midpoint
+  const mid = {x:(n1.x+n2.x)/2, y:(n1.y+n2.y)/2, z:(n1.z+n2.z)/2};
+  const L = Math.hypot(n2.x-n1.x, n2.y-n1.y, n2.z-n1.z);
+  const axisLen = clamp(0.18*L, 2.5, 12);
+
+  const basis = localAxesFromElem(n1, n2, e);
+
+  // draw line to orientation point (helpful sanity check)
+  const p3 = {x:e.x3, y:e.y3, z:e.z3};
+  const pm = project3D(mid.x, mid.y, mid.z);
+  const po = project3D(p3.x, p3.y, p3.z);
+
+  ctx.save();
+  ctx.setLineDash([4,4]);
+  ctx.strokeStyle = "rgba(107,114,128,0.55)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(pm.x, pm.y);
+  ctx.lineTo(po.x, po.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // if unstable orientation, warn and just draw local x
+  if(!basis.ok){
+    // local x only
+    const xEnd = add3(mid, mul3(basis.xhat, axisLen));
+    const pX = project3D(xEnd.x, xEnd.y, xEnd.z);
+
+    drawArrow2D(pm, pX, "rgba(220,38,38,0.9)", 2.5);
+    drawLabel2D(pX, "lx", "rgba(220,38,38,0.9)");
+
+    // annotate warning on canvas near the triad
+    ctx.save();
+    ctx.fillStyle = "rgba(185,28,28,0.9)";
+    ctx.font = "11px ui-sans-serif, system-ui, Segoe UI, Roboto, Arial";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(basis.warn || "Local y/z unstable", pm.x + 10, pm.y + 10);
+    ctx.restore();
+    return;
+  }
+
+  // local endpoints
+  const xEnd = add3(mid, mul3(basis.xhat, axisLen));
+  const yEnd = add3(mid, mul3(basis.yhat, axisLen));
+  const zEnd = add3(mid, mul3(basis.zhat, axisLen));
+
+  const pX = project3D(xEnd.x, xEnd.y, xEnd.z);
+  const pY = project3D(yEnd.x, yEnd.y, yEnd.z);
+  const pZ = project3D(zEnd.x, zEnd.y, zEnd.z);
+
+  // draw triad (x=red, y=green, z=blue)
+  drawArrow2D(pm, pX, "rgba(220,38,38,0.9)", 2.5);  drawLabel2D(pX, "lx", "rgba(220,38,38,0.9)");
+  drawArrow2D(pm, pY, "rgba(34,197,94,0.9)", 2.5);  drawLabel2D(pY, "ly", "rgba(34,197,94,0.9)");
+  drawArrow2D(pm, pZ, "rgba(59,130,246,0.9)", 2.5); drawLabel2D(pZ, "lz", "rgba(59,130,246,0.9)");
+
+  // small dot at triad origin
+  ctx.save();
+  ctx.fillStyle = "rgba(17,24,39,0.75)";
+  ctx.beginPath();
+  ctx.arc(pm.x, pm.y, 3.2, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawGlobalTriadOverlay(){
+  // Draw in screen corner, but oriented with current camera projection of global axes.
+  // Compute screen directions by projecting (center) and (center + axisWorldLen * axis).
+  const origin3 = {x: View.cam.centerX, y: View.cam.centerY, z: View.cam.centerZ};
+  const axisWorldLen = 10;  // world units used to derive direction
+  const pixLen = 26;        // final on-screen arrow length
+
+  const p0 = project3D(origin3.x, origin3.y, origin3.z);
+
+  function screenDirForAxis(ax){
+    const p1 = project3D(origin3.x + axisWorldLen*ax.x, origin3.y + axisWorldLen*ax.y, origin3.z + axisWorldLen*ax.z);
+    let vx = p1.x - p0.x, vy = p1.y - p0.y;
+    const L = Math.hypot(vx, vy);
+    if(L < 1e-6) return {x:0,y:0, ok:false};
+    vx /= L; vy /= L;
+    return {x:vx, y:vy, ok:true};
+  }
+
+  const sx = screenDirForAxis({x:1,y:0,z:0});
+  const sy = screenDirForAxis({x:0,y:1,z:0});
+  const sz = screenDirForAxis({x:0,y:0,z:1});
+
+  // fixed screen anchor
+  const A = {x: 46, y: 46};
+
+  // box background
+  ctx.save();
+  ctx.fillStyle = "rgba(255,255,255,0.78)";
+  ctx.strokeStyle = "rgba(209,213,219,0.9)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect?.(16, 16, 90, 70, 8);
+  if(ctx.roundRect) ctx.fill(), ctx.stroke();
+  else { ctx.rect(16,16,90,70); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+
+  // draw arrows
+  if(sx.ok) drawArrow2D(A, {x:A.x + pixLen*sx.x, y:A.y + pixLen*sx.y}, "rgba(220,38,38,0.9)", 2.2);
+  if(sy.ok) drawArrow2D(A, {x:A.x + pixLen*sy.x, y:A.y + pixLen*sy.y}, "rgba(34,197,94,0.9)", 2.2);
+  if(sz.ok) drawArrow2D(A, {x:A.x + pixLen*sz.x, y:A.y + pixLen*sz.y}, "rgba(59,130,246,0.9)", 2.2);
+
+  // labels
+  ctx.save();
+  ctx.fillStyle = "rgba(17,24,39,0.8)";
+  ctx.font = "11px ui-sans-serif, system-ui, Segoe UI, Roboto, Arial";
+  ctx.fillText("Global", 22, 24);
+  ctx.restore();
+
+  // axis labels near tips
+  if(sx.ok) drawLabel2D({x:A.x + pixLen*sx.x, y:A.y + pixLen*sx.y}, "X", "rgba(220,38,38,0.9)");
+  if(sy.ok) drawLabel2D({x:A.x + pixLen*sy.x, y:A.y + pixLen*sy.y}, "Y", "rgba(34,197,94,0.9)");
+  if(sz.ok) drawLabel2D({x:A.x + pixLen*sz.x, y:A.y + pixLen*sz.y}, "Z", "rgba(59,130,246,0.9)");
+
+  // origin dot
+  ctx.save();
+  ctx.fillStyle = "rgba(17,24,39,0.75)";
+  ctx.beginPath();
+  ctx.arc(A.x, A.y, 2.8, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
 
 function overlayDeflectedIfAvailable(){
   if(!Model.lastSolution) return;
@@ -897,7 +1155,13 @@ function drawPrimary(){
   }
 
   overlayDeflectedIfAvailable();
+
+  // ---- Option A: axis visualization ----
+  drawLocalAxesForSelectedElem(); // local triad for hovered/pinned segment
+  drawGlobalTriadOverlay();       // global triad in screen corner
 }
+
+
 
 /* =========================
    Solver (TEMPORARY: Still uses 2D beam formulation - will be updated to 3D space frame)
@@ -2518,6 +2782,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
