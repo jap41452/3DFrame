@@ -73,7 +73,7 @@
     <div class="sectionTitle">Segments</div>
     <button id="btnImportElems">Load Segments File</button>
     <input id="fileElems" type="file" accept=".txt,.tsv,.csv" style="display:none" />
-    <div class="hint small">elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  x3  y3  z3</div>
+  <div class="hint small">elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  rho  x3  y3  z3</div> 
     <textarea id="taElems" placeholder="Paste segment table: elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  x3  y3  z3"></textarea>
     <div class="btnRow">
       <button id="btnParseElems" class="mini">Use Segments</button>
@@ -160,6 +160,18 @@
 /* =========================
    Defaults
    ========================= */
+
+// Standard gravity (choose by unit system)
+const G_SI      = 1; //9.80665;   // m/s^2
+const G_IMP_IN  = 1; //386.0886;  // in/s^2  (32.174 ft/s^2 * 12 in/ft)
+
+// TEMP: pick one until you add a Units dropdown
+let UNIT_SYSTEM = "imperial"; // "imperial" or "metric"
+
+function getGravity(){
+  return (UNIT_SYSTEM === "metric") ? G_SI : G_IMP_IN;
+}
+
 const DEFAULT_NODES_TEXT =
 `node	x	y	z	delX	delY	delZ	thetaXX	thetaYY	thetaZZ	Fx	Fy	Fz
 1	0	0	0	0	0	0	0	0	0
@@ -172,15 +184,16 @@ const DEFAULT_NODES_TEXT =
 8	12	10	12`;
 
 const DEFAULT_ELEMS_TEXT =
-`elem	ni	nj	E	G	Izz	Iyy	Jyz	Ayz	x3	y3	z3
-1	1	2	12000000	4000000	1	1	1	2	1	2	3
-2	3	4	12000000	4000000	1	1	1	2	1	2	3
-3	5	6	12000000	4000000	1	1	1	2	1	2	3
-4	7	8	12000000	4000000	1	1	1	2	1	2	3
-5	4	8	12000000	4000000	1	1	1	2	1	2	3
-6	2	4	12000000	4000000	1	1	1	2	1	2	3
-7	2	6	12000000	4000000	1	1	1	2	1	2	3
-8	6	8	12000000	4000000	1	1	1	2	1	2	3`;
+elem	ni	nj	E	G	Izz	Iyy	Jyz	Ayz	rho	x3	y3	z3
+// elem	ni	nj	E	G	Izz	Iyy	Jyz	Ayz	x3	y3	z3
+1	1	2	12000000	4000000	1	1	1	2	.03	1	2	3
+2	3	4	12000000	4000000	1	1	1	2	.03	1	2	3
+3	5	6	12000000	4000000	1	1	1	2	.03	1	2	3
+4	7	8	12000000	4000000	1	1	1	2	.03	1	2	3
+5	4	8	12000000	4000000	1	1	1	2	.03	1	2	3
+6	2	4	12000000	4000000	1	1	1	2	.03	1	2	3
+7	2	6	12000000	4000000	1	1	1	2	.03	1	2	3
+8	6	8	12000000	4000000	1	1	1	2	.03	1	2	3`;
 
 /* =========================
    Model
@@ -464,23 +477,23 @@ function parseElems(text){
     const Izz = toNumberOrNull(get(toks,"izz",5));
     const Iyy = toNumberOrNull(get(toks,"iyy",6));
     const Jyz = toNumberOrNull(get(toks,"jyz",7) ?? get(toks,"j",7));
-    const Ayz = toNumberOrNull(get(toks,"ayz",8) ?? get(toks,"a",8));
-    
-    const x3 = toNumberOrNull(get(toks,"x3",9));
-    const y3 = toNumberOrNull(get(toks,"y3",10));
-    const z3 = toNumberOrNull(get(toks,"z3",11));
+const Ayz = toNumberOrNull(get(toks,"ayz",8) ?? get(toks,"a",8));
 
-    if(!Number.isFinite(E) || E<=0) throw new Error(`Row ${r+1}: invalid E (must be > 0)`);
-    if(!Number.isFinite(G) || G<=0) throw new Error(`Row ${r+1}: invalid G (must be > 0)`);
-    if(!Number.isFinite(Izz) || Izz<=0) throw new Error(`Row ${r+1}: invalid Izz (must be > 0)`);
-    if(!Number.isFinite(Iyy) || Iyy<=0) throw new Error(`Row ${r+1}: invalid Iyy (must be > 0)`);
-    if(!Number.isFinite(Jyz) || Jyz<=0) throw new Error(`Row ${r+1}: invalid Jyz (must be > 0)`);
-    if(!Number.isFinite(Ayz) || Ayz<=0) throw new Error(`Row ${r+1}: invalid Ayz (must be > 0)`);
-    if(!Number.isFinite(x3)) throw new Error(`Row ${r+1}: invalid x3`);
-    if(!Number.isFinite(y3)) throw new Error(`Row ${r+1}: invalid y3`);
-    if(!Number.isFinite(z3)) throw new Error(`Row ${r+1}: invalid z3`);
+// NEW: rho between Ayz and x3
+const rho = toNumberOrZero(get(toks,"rho",9));  // allow blank => 0
 
-    elems.push({ id, ni, nj, E, G, Izz, Iyy, Jyz, Ayz, x3, y3, z3 });
+const x3 = toNumberOrNull(get(toks,"x3",10));
+const y3 = toNumberOrNull(get(toks,"y3",11));
+const z3 = toNumberOrNull(get(toks,"z3",12));
+
+if(!Number.isFinite(Ayz) || Ayz<=0) throw new Error(`Row ${r+1}: invalid Ayz (must be > 0)`);
+if(!Number.isFinite(rho) || rho<0)  throw new Error(`Row ${r+1}: invalid rho (must be >= 0)`);
+if(!Number.isFinite(x3)) throw new Error(`Row ${r+1}: invalid x3`);
+if(!Number.isFinite(y3)) throw new Error(`Row ${r+1}: invalid y3`);
+if(!Number.isFinite(z3)) throw new Error(`Row ${r+1}: invalid z3`);
+
+elems.push({ id, ni, nj, E, G, Izz, Iyy, Jyz, Ayz, rho, x3, y3, z3 });
+
   }
   return elems;
 }
@@ -1562,7 +1575,15 @@ function solveStaticExpanded(expanded){
   // BC semantics:
   //   - blank => free DOF
   //   - nonblank (including 0.0) => prescribed DOF (condensed out)
-  // No hinges / no moment releases.
+  //
+  // Adds SELF-WEIGHT as uniform distributed line load on each element:
+  //   w = rho * A * g  (rho = mass density)
+  // Gravity assumed global -Z.
+  //
+  // IMPORTANT TRANSFORM CONVENTIONS (consistent with your corrected uL = T*uG):
+  //   uL = T * uG        (T maps GLOBAL displacements -> LOCAL)
+  //   Kglobal = T^T kL T
+  //   fG = T^T fL        (force vector transforms with transpose)
 
   const N = expanded.nodes.length;
   const ndof = 6*N;
@@ -1570,15 +1591,16 @@ function solveStaticExpanded(expanded){
   const K = Array.from({length: ndof}, ()=> new Float64Array(ndof));
   const F = new Float64Array(ndof);
 
-  // Apply nodal FORCE loads only (no moment loads by design)
+  // Apply nodal FORCE loads (global)
   for(let i=0;i<N;i++){
     const n = expanded.nodes[i];
     F[6*i+0] += (n.loads.fx || 0);
     F[6*i+1] += (n.loads.fy || 0);
     F[6*i+2] += (n.loads.fz || 0);
+    // No user-entered nodal moments by design
   }
 
-  // Assemble global stiffness matrix
+  // Assemble global stiffness matrix AND add equivalent nodal loads from self-weight
   for(const e of expanded.elems){
     const n1 = expanded.nodes[e.ni];
     const n2 = expanded.nodes[e.nj];
@@ -1586,13 +1608,19 @@ function solveStaticExpanded(expanded){
     const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
     if(!(L>0)) throw new Error("Zero-length element detected in expanded mesh.");
 
+    // DOF map for this element (global indices)
+    const dofs = [
+      6*e.ni+0, 6*e.ni+1, 6*e.ni+2, 6*e.ni+3, 6*e.ni+4, 6*e.ni+5,
+      6*e.nj+0, 6*e.nj+1, 6*e.nj+2, 6*e.nj+3, 6*e.nj+4, 6*e.nj+5
+    ];
+
     // Local stiffness (12x12)
     const kLocal = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
 
-    // Transformation matrix (12x12)
+    // Transformation matrix (GLOBAL -> LOCAL for displacements)
     const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
 
-    // Transform: kg = T^T * kLocal * T
+    // Transform stiffness: kg = T^T * kLocal * T
     const tmp = Array.from({length:12}, ()=> new Float64Array(12));
     for(let i=0;i<12;i++){
       for(let j=0;j<12;j++){
@@ -1606,21 +1634,77 @@ function solveStaticExpanded(expanded){
     for(let i=0;i<12;i++){
       for(let j=0;j<12;j++){
         let sum = 0;
-        for(let m=0;m<12;m++) sum += T[m][i] * tmp[m][j];
+        for(let m=0;m<12;m++) sum += T[m][i] * tmp[m][j]; // T^T on left
         kg[i][j] = sum;
       }
     }
 
-    // Assemble into global K
-    const dofs = [
-      6*e.ni+0, 6*e.ni+1, 6*e.ni+2, 6*e.ni+3, 6*e.ni+4, 6*e.ni+5,
-      6*e.nj+0, 6*e.nj+1, 6*e.nj+2, 6*e.nj+3, 6*e.nj+4, 6*e.nj+5
-    ];
+    // Assemble stiffness into global K
     for(let a=0;a<12;a++){
       const Irow = dofs[a];
       const Krow = K[Irow];
       const kga = kg[a];
       for(let b=0;b<12;b++) Krow[dofs[b]] += kga[b];
+    }
+
+    // ============================
+    // SELF-WEIGHT (uniform line load)
+    // ============================
+    // rho is stored on element as MASS density (imperial: slug/in^3, metric: kg/m^3)
+    const rho = (e.rho || 0);
+    if(rho !== 0){
+      const g = getGravity();              // expects your UNIT_SYSTEM logic
+      const w = rho * e.Ayz * g;           // force/length
+      if(Math.abs(w) > 0){
+        // Global distributed load vector (force/length): gravity in -Z
+        const wg = {x:0, y:0, z:-w};
+
+        // Extract 3x3 R from T (same entries; T block0 is R)
+        // Since uL = R * uG, global->local for vectors is vL = R * vG
+        const R = [
+          [T[0][0], T[0][1], T[0][2]],
+          [T[1][0], T[1][1], T[1][2]],
+          [T[2][0], T[2][1], T[2][2]]
+        ];
+
+        // Local components of distributed load: wL = R * wG
+        const wLx = R[0][0]*wg.x + R[0][1]*wg.y + R[0][2]*wg.z;
+        const wLy = R[1][0]*wg.x + R[1][1]*wg.y + R[1][2]*wg.z;
+        const wLz = R[2][0]*wg.x + R[2][1]*wg.y + R[2][2]*wg.z;
+
+        // Build local equivalent nodal load vector feL (12)
+        // Order: [Fx,Fy,Fz,Mx,My,Mz, Fx2,Fy2,Fz2,Mx2,My2,Mz2]
+        const feL = new Float64Array(12);
+
+        // (Optional) axial distributed load component along local x
+        // Uniform axial load: Fx_i = wx*L/2, Fx_j = wx*L/2
+        // (No moments from axial)
+        feL[0] += wLx * L/2;
+        feL[6] += wLx * L/2;
+
+        // Uniform load in local y -> end shears Fy and end moments Mz
+        feL[1]  += wLy * L/2;
+        feL[5]  +=  wLy * L*L/12;
+        feL[7]  += wLy * L/2;
+        feL[11] += -wLy * L*L/12;
+
+        // Uniform load in local z -> end shears Fz and end moments My
+        feL[2]  += wLz * L/2;
+        feL[4]  += -wLz * L*L/12;
+        feL[8]  += wLz * L/2;
+        feL[10] +=  wLz * L*L/12;
+
+        // Transform equivalent nodal loads to global: feG = T^T * feL
+        const feG = new Float64Array(12);
+        for(let i=0;i<12;i++){
+          let s = 0;
+          for(let j=0;j<12;j++) s += T[j][i] * feL[j]; // T^T
+          feG[i] = s;
+        }
+
+        // Assemble into global RHS
+        for(let a=0;a<12;a++) F[dofs[a]] += feG[a];
+      }
     }
   }
 
@@ -1628,12 +1712,11 @@ function solveStaticExpanded(expanded){
   const bcByDof = buildBcByDof(expanded);
   const {U, free, fixed} = solveWithPrescribed(K, F, bcByDof);
 
-  // Reactions (useful sanity check at prescribed DOFs)
+  // Reactions
   const R = computeReactions(K, U, F);
 
   return { U, F, K, R, meta:{N, ndof, nFree: free.length, nFixed: fixed.length, free, fixed} };
 }
-
 
 function summarizeDisplacements(expanded, U){
   let maxMag = { val:-Infinity, label:"" };
@@ -1866,139 +1949,266 @@ const {fL} = elementEndForcesLocal(Model.lastSolution.expanded, e, Model.lastSol
   };
 }
 
+
 function displayElementAnalysis(elemId, viewMode){
   // Display analysis for a primary segment with selectable view modes
+  // Updated to include:
+  //   - Self-weight (uniform distributed load) curvature in moment & shear diagrams (Option 2)
+  //   - Uses your established transform convention:
+  //       uL = T * uG   (T maps GLOBAL -> LOCAL for displacements/vectors)
+  //       Kglobal = T^T kL T
+  //       fG = T^T fL   (forces transform with transpose)
+
   if(!Model.lastSolution){
-    el.stressContent.innerHTML = '<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">Run Static Solve first to analyze stresses.</div>';
+    el.stressContent.innerHTML =
+      '<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">Run Static Solve first to analyze stresses.</div>';
     el.stressViewSelector.disabled = true;
     return;
   }
-  
+
   const elem = Model.elemById.get(elemId);
   if(!elem){
-    el.stressContent.innerHTML = '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">Element not found.</div>';
+    el.stressContent.innerHTML =
+      '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">Element not found.</div>';
     el.stressViewSelector.disabled = true;
     return;
   }
-  
+
   // Enable view selector
   el.stressViewSelector.disabled = false;
-  
+
   // Find all expanded sub-elements for this primary element
   const subElems = Model.lastSolution.expanded.elems.filter(e => e.primaryElemId === elemId);
-  
   if(subElems.length === 0){
-    el.stressContent.innerHTML = '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">No subsegments found.</div>';
+    el.stressContent.innerHTML =
+      '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">No subsegments found.</div>';
     return;
   }
-  
-  // CRITICAL FIX: Calculate forces from FIRST subsegment only
-  // The internal forces are constant along the primary element
-  // Each subsegment has its own local forces, but we want the forces at the start of the PRIMARY element
 
-// Use FIRST subsegment for i-end forces/moments and LAST subsegment for j-end moments
-const firstSub = subElems[0];
-const lastSub  = subElems[subElems.length - 1];
+  // Use FIRST subsegment for i-end forces/moments and LAST subsegment for j-end moments
+  const firstSub = subElems[0];
+  const lastSub  = subElems[subElems.length - 1];
 
-const idxFirst = Model.lastSolution.expanded.elems.indexOf(firstSub);
-const idxLast  = Model.lastSolution.expanded.elems.indexOf(lastSub);
+  const idxFirst = Model.lastSolution.expanded.elems.indexOf(firstSub);
+  const idxLast  = Model.lastSolution.expanded.elems.indexOf(lastSub);
 
-const firstForces = calculateElementStresses(Model.lastSolution.expanded, idxFirst, Model.lastSolution.U);
-const lastForces  = calculateElementStresses(Model.lastSolution.expanded, idxLast,  Model.lastSolution.U);
+  const firstForces = calculateElementStresses(Model.lastSolution.expanded, idxFirst, Model.lastSolution.U);
+  const lastForces  = calculateElementStresses(Model.lastSolution.expanded, idxLast,  Model.lastSolution.U);
 
-// CONSTANT internal forces (no distributed loads): take from first subsegment i-end
-const N  = firstForces.forces.i.Fx;
-const Vy = firstForces.forces.i.Fy;
-const Vz = firstForces.forces.i.Fz;
-const Mx = firstForces.forces.i.Mx;
+  // CONSTANT internal forces (no distributed loads other than self-weight): take from first subsegment i-end
+  const N  = firstForces.forces.i.Fx;
+  const Vy_i = firstForces.forces.i.Fy;
+  const Vz_i = firstForces.forces.i.Fz;
+  const Mx = firstForces.forces.i.Mx;
 
-// TRUE primary end moments:
-// - i-end from first subsegment i-end
-// - j-end from last subsegment j-end
-const My_i = firstForces.forces.i.My;
-const Mz_i = firstForces.forces.i.Mz;
-const My_j = lastForces.forces.j.My;
-const Mz_j = lastForces.forces.j.Mz;
-  
- // Calculate primary element length
-const ni_primary = Model.nodeById.get(elem.ni);
-const nj_primary = Model.nodeById.get(elem.nj);
-const dx = nj_primary.x - ni_primary.x;
-const dy = nj_primary.y - ni_primary.y;
-const dz = nj_primary.z - ni_primary.z;
-const L_primary = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  // Primary end moments (useful for summary/diagnostic)
+  const My_i = firstForces.forces.i.My;
+  const Mz_i = firstForces.forces.i.Mz;
+  const My_j_end = lastForces.forces.j.My;
+  const Mz_j_end = lastForces.forces.j.Mz;
 
+  // Primary element length
+  const ni_primary = Model.nodeById.get(elem.ni);
+  const nj_primary = Model.nodeById.get(elem.nj);
+  const dxp = nj_primary.x - ni_primary.x;
+  const dyp = nj_primary.y - ni_primary.y;
+  const dzp = nj_primary.z - ni_primary.z;
+  const L_primary = Math.sqrt(dxp*dxp + dyp*dyp + dzp*dzp);
 
-
- // Section properties (from primary element)
+  // Section properties (from primary element)
   const Ayz = elem.Ayz;
   const Izz = elem.Izz;
   const Iyy = elem.Iyy;
   const Jyz = elem.Jyz;
-  
-const c_y = firstForces.sectionProperties.c_y;
-const c_z = firstForces.sectionProperties.c_z;
 
-  
-  // CONSTANT stresses (independent of position)
+  // Extreme-fiber distances (your existing convention)
+  const c_y = firstForces.sectionProperties.c_y;
+  const c_z = firstForces.sectionProperties.c_z;
+
+  // -------------------------------
+  // SELF-WEIGHT local components wy,wz
+  // -------------------------------
+  // rho is MASS density; w = rho*A*g (force/length). Gravity in global -Z.
+  // Convert global distributed load vector to LOCAL components using same T basis:
+  //   wL = R * wG  (since uL = R*uG)
+  let wLy = 0, wLz = 0, wLx = 0;
+  {
+    const rho = (elem.rho || 0);
+    if(rho !== 0){
+      const g = getGravity();
+      const w = rho * elem.Ayz * g; // force/length
+      if(Math.abs(w) > 0){
+        const wg = {x:0, y:0, z:-w};
+
+        // Build T for the PRIMARY element
+        const Tprim = build3DTransformationMatrix(ni_primary, nj_primary, elem.x3, elem.y3, elem.z3);
+
+        // Extract 3x3 R (block 0 of T)
+        const R = [
+          [Tprim[0][0], Tprim[0][1], Tprim[0][2]],
+          [Tprim[1][0], Tprim[1][1], Tprim[1][2]],
+          [Tprim[2][0], Tprim[2][1], Tprim[2][2]]
+        ];
+
+        // wL = R * wG
+        wLx = R[0][0]*wg.x + R[0][1]*wg.y + R[0][2]*wg.z;
+        wLy = R[1][0]*wg.x + R[1][1]*wg.y + R[1][2]*wg.z;
+        wLz = R[2][0]*wg.x + R[2][1]*wg.y + R[2][2]*wg.z;
+      }
+    }
+  }
+
+  // CONSTANT stresses (independent of position) — shear/torsion use end forces
   const sigma_axial = N / Ayz;
-  const tau_y = Math.abs(Vy) / Ayz;
-  const tau_z = Math.abs(Vz) / Ayz;
+
+  const tau_y = Math.abs(Vy_i) / Ayz;
+  const tau_z = Math.abs(Vz_i) / Ayz;
   const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
+
   const c_torsion = Math.sqrt(Math.max(Iyy, Izz) / Ayz);
   const tau_torsion = Math.abs(Mx) * c_torsion / Jyz;
-  
-  // Build stress profile at different positions along element
-  const numPoints = 11; // Calculate at 0%, 10%, 20%, ..., 100%
+
+  // Build stress profile along element
+  // OPTION 2: if self-weight exists (wLy or wLz nonzero), use curved moment formulas:
+  //   Vy(x) = Vy_i - wLy*x
+  //   Vz(x) = Vz_i - wLz*x
+  //   Mz(x) = Mz_i + Vy_i*x - 0.5*wLy*x^2
+  //   My(x) = My_i + Vz_i*x - 0.5*wLz*x^2
+  // If wLy=wLz=0, this reduces to linear M and constant V automatically.
+  const numPoints = 41; // finer for curved plots
   const stressProfile = [];
-  
-  for(let i = 0; i < numPoints; i++){
-    const xi = i / (numPoints - 1); // Position from 0 to 1
-    
-    // Linearly interpolate moments
-    const My_xi = My_i + xi * (My_j - My_i);
-    const Mz_xi = Mz_i + xi * (Mz_j - Mz_i);
-    
-    // Bending stresses at this position
-    const sigma_bend_My = Math.abs(My_xi) * c_z / Izz;
-    const sigma_bend_Mz = Math.abs(Mz_xi) * c_y / Iyy;
-    
-    // Combined stresses (extreme fibers)
+
+  for(let i=0; i<numPoints; i++){
+    const xi = i / (numPoints - 1);  // 0..1
+    const x = xi * L_primary;
+
+    const Vy_x = Vy_i - wLy * x;
+    const Vz_x = Vz_i - wLz * x;
+
+    const Mz_x = Mz_i + Vy_i * x - 0.5 * wLy * x * x; // bending about local z from local-y load
+    const My_x = My_i + Vz_i * x - 0.5 * wLz * x * x; // bending about local y from local-z load
+
+    // Bending stresses at this position (keep your existing mapping)
+    const sigma_bend_My = Math.abs(My_x) * c_z / Izz;
+    const sigma_bend_Mz = Math.abs(Mz_x) * c_y / Iyy;
+
     const sigma_max = sigma_axial + sigma_bend_My + sigma_bend_Mz;
     const sigma_min = sigma_axial - sigma_bend_My - sigma_bend_Mz;
-    
+
     stressProfile.push({
       position: xi,
-      My: My_xi,
-      Mz: Mz_xi,
-      sigma_axial: sigma_axial,      // CONSTANT
-      sigma_bend_My: sigma_bend_My,
-      sigma_bend_Mz: sigma_bend_Mz,
-      sigma_max: sigma_max,
-      sigma_min: sigma_min,
-      tau_shear: tau_shear,          // CONSTANT
-      tau_torsion: tau_torsion       // CONSTANT
+      x: x,
+      Vy: Vy_x,
+      Vz: Vz_x,
+      My: My_x,
+      Mz: Mz_x,
+      sigma_axial,
+      sigma_bend_My,
+      sigma_bend_Mz,
+      sigma_max,
+      sigma_min,
+      tau_shear,     // (end-force based; if you want tau(x), compute from Vy_x,Vz_x)
+      tau_torsion    // constant
     });
   }
-  
-  // Get the mode to display
+
+  // Choose display mode
   const mode = viewMode || el.stressViewSelector.value;
-  
+
   let html = `<div class="stressLabel">Segment ${elemId}: Node ${elem.ni} → ${elem.nj}</div>`;
-  html += `<div class="stressValue" style="margin-bottom:10px;">Length: ${L_primary.toFixed(2)}</div>`;
-  
+  html += `<div class="stressValue" style="margin-bottom:8px;">Length: ${L_primary.toFixed(3)}</div>`;
+
+  // Self-weight summary line
+  if((elem.rho||0) !== 0){
+    const g = getGravity();
+    const w = (elem.rho||0) * elem.Ayz * g;
+    html += `<div class="stressValue" style="margin-bottom:10px;">Self-weight: w = ρ·A·g = ${w.toExponential(3)} (global -Z); local components: wx=${wLx.toExponential(3)}, wy=${wLy.toExponential(3)}, wz=${wLz.toExponential(3)}</div>`;
+  }
+
   if(mode === 'table'){
     html += buildStressTableCorrected(stressProfile);
-  } else if(mode === 'moment'){
+  }
+  else if(mode === 'moment'){
     html += buildMomentDiagramsCorrected(stressProfile, elem);
-  } else if(mode === 'shear'){
-    html += buildShearDiagramsCorrected(Vy, Vz);
-  } else if(mode === 'combined'){
+    // Optional diagnostic (end consistency)
+    html += '<div style="margin-top:8px; font-size:11px;">';
+    html += `<div class="stressValue">End moments (from recovery): My_i=${My_i.toFixed(3)}, My_j=${My_j_end.toFixed(3)} | Mz_i=${Mz_i.toFixed(3)}, Mz_j=${Mz_j_end.toFixed(3)}</div>`;
+    html += '</div>';
+  }
+  else if(mode === 'shear'){
+    // Inline shear diagram with varying Vy(x), Vz(x) (Option 2)
+    const width = el.stressContent.clientWidth - 40;
+    const height = 170;
+    const margin = {top: 20, right: 60, bottom: 40, left: 60};
+    const plotWidth = width - margin.left - margin.right;
+    const plotHeight = height - margin.top - margin.bottom;
+
+    const pos = stressProfile.map(sp => sp.position);
+    const Vy_vals = stressProfile.map(sp => sp.Vy);
+    const Vz_vals = stressProfile.map(sp => sp.Vz);
+    const Vmax = Math.max(
+      ...Vy_vals.map(v=>Math.abs(v)),
+      ...Vz_vals.map(v=>Math.abs(v)),
+      1
+    );
+
+    const yScale = (plotHeight/2) / Vmax;
+    const yZero = margin.top + plotHeight/2;
+
+    html += '<div style="margin-bottom:10px; font-size:11px;">';
+    html += '<div class="stressLabel">Shear Force Diagrams (Local Coordinates)</div>';
+    html += '<div class="stressValue">Vy(x)=Vy_i−wy·x, Vz(x)=Vz_i−wz·x (linear if self-weight is present)</div>';
+    html += '</div>';
+
+    html += `<svg width="${width}" height="${height}" style="border:1px solid var(--line); background:#fff;">`;
+    // Axes
+    html += `<line x1="${margin.left}" y1="${yZero}" x2="${margin.left + plotWidth}" y2="${yZero}" stroke="#ccc" stroke-width="1"/>`;
+    html += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#666" stroke-width="1"/>`;
+
+    // Vy polyline
+    let pathVy = `M ${margin.left} ${yZero - Vy_vals[0]*yScale}`;
+    for(let i=1;i<pos.length;i++){
+      const x = margin.left + pos[i]*plotWidth;
+      const y = yZero - Vy_vals[i]*yScale;
+      pathVy += ` L ${x} ${y}`;
+    }
+    html += `<path d="${pathVy}" fill="none" stroke="#dc2626" stroke-width="2"/>`;
+
+    // Vz polyline
+    let pathVz = `M ${margin.left} ${yZero - Vz_vals[0]*yScale}`;
+    for(let i=1;i<pos.length;i++){
+      const x = margin.left + pos[i]*plotWidth;
+      const y = yZero - Vz_vals[i]*yScale;
+      pathVz += ` L ${x} ${y}`;
+    }
+    html += `<path d="${pathVz}" fill="none" stroke="#2563eb" stroke-width="2"/>`;
+
+    // Labels & legend
+    html += `<text x="${margin.left + plotWidth/2}" y="${height - 5}" text-anchor="middle" font-size="11" fill="#666">Position along element</text>`;
+    html += `<text x="${15}" y="${margin.top + plotHeight/2}" text-anchor="middle" font-size="11" fill="#666" transform="rotate(-90, 15, ${margin.top + plotHeight/2})">Shear</text>`;
+
+    html += `<line x1="${width - 170}" y1="${margin.top + 10}" x2="${width - 150}" y2="${margin.top + 10}" stroke="#dc2626" stroke-width="2"/>`;
+    html += `<text x="${width - 145}" y="${margin.top + 14}" font-size="10" fill="#666">Vy</text>`;
+    html += `<line x1="${width - 170}" y1="${margin.top + 25}" x2="${width - 150}" y2="${margin.top + 25}" stroke="#2563eb" stroke-width="2"/>`;
+    html += `<text x="${width - 145}" y="${margin.top + 29}" font-size="10" fill="#666">Vz</text>`;
+
+    html += `</svg>`;
+
+    const Vy_min = Math.min(...Vy_vals), Vy_max = Math.max(...Vy_vals);
+    const Vz_min = Math.min(...Vz_vals), Vz_max = Math.max(...Vz_vals);
+
+    html += '<div style="margin-top:8px; font-size:11px;">';
+    html += `<div class="stressValue">Vy range: ${Vy_min.toFixed(3)} to ${Vy_max.toFixed(3)}</div>`;
+    html += `<div class="stressValue">Vz range: ${Vz_min.toFixed(3)} to ${Vz_max.toFixed(3)}</div>`;
+    html += '</div>';
+  }
+  else if(mode === 'combined'){
     html += buildCombinedStressDiagramCorrected(stressProfile, elem);
   }
-  
+
   el.stressContent.innerHTML = html;
 }
+
 
 function buildStressTableCorrected(stressProfile){
   // Table with corrected constant/varying values
@@ -2801,6 +3011,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
