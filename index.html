@@ -2000,17 +2000,26 @@ const {fL} = elementEndForcesLocal(Model.lastSolution.expanded, e, Model.lastSol
   };
 }
 
+
 function displayElementAnalysis(elemId, viewMode){
-  // Display analysis for a primary segment with selectable view modes
-  // Includes self-weight curvature in moment & shear diagrams.
-  // Uses your transform convention:
-  //   uL = T * uG   (T maps GLOBAL -> LOCAL for displacements/vectors)
-  //   Kglobal = T^T kL T
-  //   fG = T^T fL
+  // Robust element diagrams by stitching subelements.
+  // Uses recovered LOCAL end forces per subelement:
+  //   fL = k*uL - feL(UDL)
+  // Then computes within each subelement:
+  //   Vy(x)=Vy_i - wy*x
+  //   Vz(x)=Vz_i - wz*x
+  //   Mz(x)=Mz_i + Vy_i*x - 0.5*wy*x^2
+  //   My(x)=My_i + Vz_i*x - 0.5*wz*x^2
+  //
+  // Convention:
+  //   uL = T * uG (GLOBAL->LOCAL)
+  //   feG = T^T * feL
+  //
+  // NOTE: This avoids using PRIMARY-member wL* with subelement end forces.
 
   if(!Model.lastSolution){
     el.stressContent.innerHTML =
-      '<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">Run Static Solve first to analyze stresses.</div>';
+      '<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px;">Run Static Solve first to analyze.</div>';
     el.stressViewSelector.disabled = true;
     return;
   }
@@ -2022,189 +2031,175 @@ function displayElementAnalysis(elemId, viewMode){
     el.stressViewSelector.disabled = true;
     return;
   }
-
-  // Enable view selector
   el.stressViewSelector.disabled = false;
 
-  // Find all expanded sub-elements for this primary element
-  const subElems = Model.lastSolution.expanded.elems.filter(e => e.primaryElemId === elemId);
+  // Collect and order subelements (important!)
+  const subElems = Model.lastSolution.expanded.elems
+    .filter(e => e.primaryElemId === elemId)
+    .slice()
+    .sort((a,b)=> (a.subIndex||0) - (b.subIndex||0));
+
   if(subElems.length === 0){
     el.stressContent.innerHTML =
       '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">No subsegments found.</div>';
     return;
   }
 
-  // Use first + last subsegments to get i/j-end forces consistently
-  const firstSub = subElems[0];
-  const lastSub  = subElems[subElems.length - 1];
-
-  const idxFirst = Model.lastSolution.expanded.elems.indexOf(firstSub);
-  const idxLast  = Model.lastSolution.expanded.elems.indexOf(lastSub);
-
-  const firstForces = calculateElementStresses(Model.lastSolution.expanded, idxFirst, Model.lastSolution.U);
-  const lastForces  = calculateElementStresses(Model.lastSolution.expanded, idxLast,  Model.lastSolution.U);
-
-  // Recovered END ACTIONS (nodal actions: element -> node) from recovery
-  const N_node_i   = firstForces.forces.i.Fx;
-  const Fy_node_i  = firstForces.forces.i.Fy;
-  const Fz_node_i  = firstForces.forces.i.Fz;
-  const Mx_node_i  = firstForces.forces.i.Mx;
-
-  const My_node_i  = firstForces.forces.i.My;
-  const Mz_node_i  = firstForces.forces.i.Mz;
-  const My_node_j  = lastForces.forces.j.My;
-  const Mz_node_j  = lastForces.forces.j.Mz;
-
-  // Primary element length
-  const ni_primary = Model.nodeById.get(elem.ni);
-  const nj_primary = Model.nodeById.get(elem.nj);
-  if(!ni_primary || !nj_primary){
+  // Primary length (for reporting + normalized position)
+  const niP = Model.nodeById.get(elem.ni);
+  const njP = Model.nodeById.get(elem.nj);
+  if(!niP || !njP){
     el.stressContent.innerHTML =
-      '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">Element references missing primary nodes.</div>';
+      '<div style="color:var(--err); font-size:12px; text-align:center; padding:20px;">Primary nodes missing.</div>';
     return;
   }
-  const dxp = nj_primary.x - ni_primary.x;
-  const dyp = nj_primary.y - ni_primary.y;
-  const dzp = nj_primary.z - ni_primary.z;
+  const dxp = njP.x - niP.x, dyp = njP.y - niP.y, dzp = njP.z - niP.z;
   const L_primary = Math.sqrt(dxp*dxp + dyp*dyp + dzp*dzp);
 
-  // Section properties
-  const Ayz = elem.Ayz;
-  const Izz = elem.Izz;
-  const Iyy = elem.Iyy;
-  const Jyz = elem.Jyz;
+  // Section props (for stress)
+  const Ayz = elem.Ayz, Izz = elem.Izz, Iyy = elem.Iyy, Jyz = elem.Jyz;
 
-  // Extreme fiber distances (your existing convention)
-  const c_y = firstForces.sectionProperties.c_y;
-  const c_z = firstForces.sectionProperties.c_z;
+  // Helper: local w components for a given (sub)element using its own T
+  function localUDLcomponents(expanded, e, L){
+    let wLx=0, wLy=0, wLz=0;
+    const rho = (e.rho || 0);
+    if(rho === 0) return {wLx,wLy,wLz,w:0};
+    const g = getGravity();
+    const w = rho * e.Ayz * g;
+    if(Math.abs(w) === 0) return {wLx,wLy,wLz,w:0};
 
-  // -------------------------------
-  // SELF-WEIGHT: convert global -Z line load to local components
-  // -------------------------------
-  let wLx = 0, wLy = 0, wLz = 0; // force/length in LOCAL axes
-  {
-    const rho = (elem.rho || 0);
-    if(rho !== 0){
-      const g = getGravity();
-      const w = rho * elem.Ayz * g; // force/length (magnitude)
-      if(Math.abs(w) > 0){
-        const wg = {x:0, y:0, z:-w}; // global gravity is -Z
+    const wg = {x:0, y:0, z:-w};
 
-        // T for PRIMARY member
-        const Tprim = build3DTransformationMatrix(ni_primary, nj_primary, elem.x3, elem.y3, elem.z3);
+    const n1 = expanded.nodes[e.ni];
+    const n2 = expanded.nodes[e.nj];
+    const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
 
-        // R is the 3x3 in block 0; since uL = R*uG, vectors go vL = R*vG
-        const R = [
-          [Tprim[0][0], Tprim[0][1], Tprim[0][2]],
-          [Tprim[1][0], Tprim[1][1], Tprim[1][2]],
-          [Tprim[2][0], Tprim[2][1], Tprim[2][2]]
-        ];
+    // R is top-left 3x3; vectors map GLOBAL->LOCAL as vL = R*vG
+    const R = [
+      [T[0][0], T[0][1], T[0][2]],
+      [T[1][0], T[1][1], T[1][2]],
+      [T[2][0], T[2][1], T[2][2]]
+    ];
 
-        wLx = R[0][0]*wg.x + R[0][1]*wg.y + R[0][2]*wg.z;
-        wLy = R[1][0]*wg.x + R[1][1]*wg.y + R[1][2]*wg.z;
-        wLz = R[2][0]*wg.x + R[2][1]*wg.y + R[2][2]*wg.z;
-      }
-    }
+    wLx = R[0][0]*wg.x + R[0][1]*wg.y + R[0][2]*wg.z;
+    wLy = R[1][0]*wg.x + R[1][1]*wg.y + R[1][2]*wg.z;
+    wLz = R[2][0]*wg.x + R[2][1]*wg.y + R[2][2]*wg.z;
+
+    return {wLx,wLy,wLz,w};
   }
 
-  // ============================
-  // IMPORTANT FIX (nodal vs section)
-  // ============================
-  // firstForces/lastForces store NODAL actions (element -> node).
-  // Internal SECTION resultants just inside the element are the NEGATIVES
-  // of the nodal actions at that end.
-  const N0  = -N_node_i;
-  const Vy0 = -Fy_node_i;
-  const Vz0 = -Fz_node_i;
-  const My0 = -My_node_i;
-  const Mz0 = -Mz_node_i;
+  // Build stitched profile
+  const expanded = Model.lastSolution.expanded;
+  const U = Model.lastSolution.U;
 
-  // Constant stresses (baseline) using SECTION axial force sign convention
-  // (If you want tension positive, keep as N0/A. If you want nodal sign, swap.)
+  const samplesPerSub = 6; // 6 points per subelement (adjust if you want smoother)
+  const profile = [];
+  let cumLen = 0;
+
+  // Use first subelement to get extreme fiber distances (your existing convention)
+  const idx0 = expanded.elems.indexOf(subElems[0]);
+  const firstStress = calculateElementStresses(expanded, idx0, U);
+  const c_y = firstStress.sectionProperties.c_y;
+  const c_z = firstStress.sectionProperties.c_z;
+
+  // Also recover constant baseline (axial/shear/torsion) from first subelement i-end
+  // (These vary only if you have nodal loads or releases; UDL causes shear/moment variation)
+  const {fL: fL0} = elementEndForcesLocal(expanded, subElems[0], U);
+  const N0  = fL0[0];
+  const Mx0 = fL0[3];
+
   const sigma_axial = N0 / Ayz;
-
-  // Shear/torsion "summary" (still end-based). If you want varying tau(x), compute from Vy(x),Vz(x).
-  const tau_y = Math.abs(Vy0) / Ayz;
-  const tau_z = Math.abs(Vz0) / Ayz;
-  const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
-
   const c_torsion = Math.sqrt(Math.max(Iyy, Izz) / Ayz);
-  const tau_torsion = Math.abs(Mx_node_i) * c_torsion / Jyz;
+  const tau_torsion = Math.abs(Mx0) * c_torsion / Jyz;
 
-  // Build a profile along the member (SECTION resultants):
-  //   Vy(x) = Vy0 + wLy*x
-  //   Vz(x) = Vz0 + wLz*x
-  //   Mz(x) = Mz0 + Vy0*x + 0.5*wLy*x^2
-  //   My(x) = My0 + Vz0*x + 0.5*wLz*x^2
-  const numPoints = 41;
-  const stressProfile = [];
+  for(const se of subElems){
+    const {fL, L} = elementEndForcesLocal(expanded, se, U);
 
-  for(let i=0; i<numPoints; i++){
-    const xi = i / (numPoints - 1);
-    const x  = xi * L_primary;
+    // i-end internal actions in LOCAL axes
+    const Vy_i = fL[1];
+    const Vz_i = fL[2];
+    const My_i = fL[4];
+    const Mz_i = fL[5];
 
-    const Vy_x = Vy0 + wLy * x;
-    const Vz_x = Vz0 + wLz * x;
+    // Local UDL components for THIS subelement
+    const {wLy, wLz} = localUDLcomponents(expanded, se, L);
 
-    const Mz_x = Mz0 + Vy0 * x + 0.5 * wLy * x * x;
-    const My_x = My0 + Vz0 * x + 0.5 * wLz * x * x;
+    for(let k=0; k<samplesPerSub; k++){
+      const xi = k/(samplesPerSub-1);
+      const x  = xi * L;
+      const s  = (cumLen + x) / (L_primary || 1); // normalized position along PRIMARY
 
-    const sigma_bend_My = Math.abs(My_x) * c_z / Izz;
-    const sigma_bend_Mz = Math.abs(Mz_x) * c_y / Iyy;
+      const Vy = Vy_i - wLy * x;
+      const Vz = Vz_i - wLz * x;
 
-    const sigma_max = sigma_axial + sigma_bend_My + sigma_bend_Mz;
-    const sigma_min = sigma_axial - sigma_bend_My - sigma_bend_Mz;
+      const Mz = Mz_i + Vy_i * x - 0.5 * wLy * x * x;
+      const My = My_i + Vz_i * x - 0.5 * wLz * x * x;
 
-    stressProfile.push({
-      position: xi,
-      x,
-      Vy: Vy_x,
-      Vz: Vz_x,
-      My: My_x,
-      Mz: Mz_x,
-      sigma_axial,
-      sigma_bend_My,
-      sigma_bend_Mz,
-      sigma_max,
-      sigma_min,
-      tau_shear,
-      tau_torsion
-    });
+      // Simple stress estimates (same as you had)
+      const sigma_bend_My = Math.abs(My) * c_z / Izz;
+      const sigma_bend_Mz = Math.abs(Mz) * c_y / Iyy;
+      const sigma_max = sigma_axial + sigma_bend_My + sigma_bend_Mz;
+      const sigma_min = sigma_axial - sigma_bend_My - sigma_bend_Mz;
+
+      // Shear magnitude (if you want varying shear stress, use Vy,Vz here)
+      const tau_y = Math.abs(Vy) / Ayz;
+      const tau_z = Math.abs(Vz) / Ayz;
+      const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
+
+      profile.push({
+        position: Math.max(0, Math.min(1, s)),
+        x_global: cumLen + x,
+        Vy, Vz, My, Mz,
+        sigma_axial,
+        sigma_bend_My,
+        sigma_bend_Mz,
+        sigma_max,
+        sigma_min,
+        tau_shear,
+        tau_torsion
+      });
+    }
+
+    cumLen += L;
   }
+
+  // Ensure sorted by position
+  profile.sort((a,b)=>a.position-b.position);
 
   const mode = viewMode || el.stressViewSelector.value;
 
   let html = `<div class="stressLabel">Segment ${elemId}: Node ${elem.ni} → ${elem.nj}</div>`;
-  html += `<div class="stressValue" style="margin-bottom:8px;">Length: ${L_primary.toFixed(3)}</div>`;
+  html += `<div class="stressValue" style="margin-bottom:8px;">Length: ${L_primary.toFixed(3)} (subsegs: ${subElems.length})</div>`;
 
-  // Self-weight info
+  // Self-weight summary (primary element, for display only)
   if((elem.rho||0) !== 0){
     const g = getGravity();
     const w = (elem.rho||0) * elem.Ayz * g;
-    html += `<div class="stressValue" style="margin-bottom:10px;">Self-weight: w = ρ·A·g = ${w.toExponential(3)} (global -Z); local components: wx=${wLx.toExponential(3)}, wy=${wLy.toExponential(3)}, wz=${wLz.toExponential(3)}</div>`;
+    html += `<div class="stressValue" style="margin-bottom:10px;">Self-weight magnitude: w = ρ·A·g = ${w.toExponential(3)} (global -Z). Diagrams are stitched per subsegment in each subsegment’s local axes.</div>`;
   }
 
   if(mode === 'table'){
-    html += buildStressTableCorrected(stressProfile);
+    html += buildStressTableCorrected(profile);
   }
   else if(mode === 'moment'){
-    html += buildMomentDiagramsCorrected(stressProfile, elem);
+    html += buildMomentDiagramsCorrected(profile, elem);
+    // show recovered end moments from stitched ends
+    const left = profile[0], right = profile[profile.length-1];
     html += '<div style="margin-top:8px; font-size:11px;">';
-    html += `<div class="stressValue">End moments (from recovery, nodal actions): My_i=${My_node_i.toFixed(3)}, My_j=${My_node_j.toFixed(3)} | Mz_i=${Mz_node_i.toFixed(3)}, Mz_j=${Mz_node_j.toFixed(3)}</div>`;
-    html += `<div class="stressValue">End moments (section, expected): My(0+)=${My0.toFixed(3)}, My(L-)=${(-My_node_j).toFixed(3)} | Mz(0+)=${Mz0.toFixed(3)}, Mz(L-)=${(-Mz_node_j).toFixed(3)}</div>`;
+    html += `<div class="stressValue">Stitched ends: My(0)=${left.My.toFixed(3)}, My(L)=${right.My.toFixed(3)} | Mz(0)=${left.Mz.toFixed(3)}, Mz(L)=${right.Mz.toFixed(3)}</div>`;
     html += '</div>';
   }
   else if(mode === 'shear'){
-    // Inline varying shear (linear if self-weight exists)
+    // reuse your existing shear plot block but feed arrays from profile
     const width = el.stressContent.clientWidth - 40;
     const height = 170;
     const margin = {top: 20, right: 60, bottom: 40, left: 60};
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
 
-    const pos = stressProfile.map(sp => sp.position);
-    const Vy_vals = stressProfile.map(sp => sp.Vy);
-    const Vz_vals = stressProfile.map(sp => sp.Vz);
+    const pos = profile.map(sp => sp.position);
+    const Vy_vals = profile.map(sp => sp.Vy);
+    const Vz_vals = profile.map(sp => sp.Vz);
     const Vmax = Math.max(
       ...Vy_vals.map(v=>Math.abs(v)),
       ...Vz_vals.map(v=>Math.abs(v)),
@@ -2216,7 +2211,7 @@ function displayElementAnalysis(elemId, viewMode){
 
     html += '<div style="margin-bottom:10px; font-size:11px;">';
     html += '<div class="stressLabel">Shear Force Diagrams (Local Coordinates)</div>';
-    html += '<div class="stressValue">Vy(x)=Vy(0+)+wy·x, Vz(x)=Vz(0+)+wz·x</div>';
+    html += '<div class="stressValue">Stitched per subsegment (UDL causes linear variation)</div>';
     html += '</div>';
 
     html += `<svg width="${width}" height="${height}" style="border:1px solid var(--line); background:#fff;">`;
@@ -2249,16 +2244,13 @@ function displayElementAnalysis(elemId, viewMode){
 
     html += `</svg>`;
 
-    const Vy_min = Math.min(...Vy_vals), Vy_max = Math.max(...Vy_vals);
-    const Vz_min = Math.min(...Vz_vals), Vz_max = Math.max(...Vz_vals);
-
     html += '<div style="margin-top:8px; font-size:11px;">';
-    html += `<div class="stressValue">Vy range: ${Vy_min.toFixed(3)} to ${Vy_max.toFixed(3)}</div>`;
-    html += `<div class="stressValue">Vz range: ${Vz_min.toFixed(3)} to ${Vz_max.toFixed(3)}</div>`;
+    html += `<div class="stressValue">Vy range: ${Math.min(...Vy_vals).toFixed(3)} to ${Math.max(...Vy_vals).toFixed(3)}</div>`;
+    html += `<div class="stressValue">Vz range: ${Math.min(...Vz_vals).toFixed(3)} to ${Math.max(...Vz_vals).toFixed(3)}</div>`;
     html += '</div>';
   }
   else if(mode === 'combined'){
-    html += buildCombinedStressDiagramCorrected(stressProfile, elem);
+    html += buildCombinedStressDiagramCorrected(profile, elem);
   }
 
   el.stressContent.innerHTML = html;
@@ -3065,6 +3057,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
