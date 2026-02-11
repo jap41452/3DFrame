@@ -73,7 +73,7 @@
     <div class="sectionTitle">Segments</div>
     <button id="btnImportElems">Load Segments File</button>
     <input id="fileElems" type="file" accept=".txt,.tsv,.csv" style="display:none" />
-  <div class="hint small">elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  rho  x3  y3  z3</div> 
+  <div class="hint small">elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  rho  x3  y3  z3. Header optional.</div> 
     <textarea id="taElems" placeholder="Paste segment table: elem  ni  nj  E  G  Izz  Iyy  Jyz  Ayz  x3  y3  z3"></textarea>
     <div class="btnRow">
       <button id="btnParseElems" class="mini">Use Segments</button>
@@ -175,24 +175,24 @@ function getGravity(){
 const DEFAULT_NODES_TEXT =
 `node	x	y	z	delX	delY	delZ	thetaXX	thetaYY	thetaZZ	Fx	Fy	Fz
 1	0	0	0	0	0	0	0	0	0
-2	0	0	10
-3	12	0	0	0	0	0	0	0	0
-4	12	0	12
-5	0	10	0	0	0	0
-6	0	10	12							100
-7	12	10	0	0	0	0
-8	12	10	12`;
+2	0	0	96
+3	60	0	0	0	0	0	0	0	0
+4	60	0	96
+5	0	72	0	0	0	0
+6	0	72	96							500	500
+7	60	72	0	0	0	0
+8	60	72	96`;
 
 const DEFAULT_ELEMS_TEXT =
 `elem	ni	nj	E	G	Izz	Iyy	Jyz	Ayz	rho	x3	y3	z3
-1	1	2	12000000	4000000	1	1	1	2	0.03	1	2	3
-2	3	4	12000000	4000000	1	1	1	2	0.03	1	2	3
-3	5	6	12000000	4000000	1	1	1	2	0.03	1	2	3
-4	7	8	12000000	4000000	1	1	1	2	0.03	1	2	3
-5	4	8	12000000	4000000	1	1	1	2	0.03	1	2	3
-6	2	4	12000000	4000000	1	1	1	2	0.03	1	2	3
-7	2	6	12000000	4000000	1	1	1	2	0.03	1	2	3
-8	6	8	12000000	4000000	1	1	1	2	0.03	1	2	3`;
+1	1	2	12000000	4610000	10.7	2.67	7.3	8	0.03	60	0	0
+2	3	4	12000000	4610000	10.7	2.67	7.3	8	0.03	0	0	0
+3	5	6	12000000	4610000	10.7	2.67	7.3	8	0.03	60	72	0
+4	7	8	12000000	4610000	10.7	2.67	7.3	8	0.03	0	72	0
+5	4	8	12000000	4610000	10.7	2.67	7.3	8	0.03	1	1	96
+6	2	4	12000000	4610000	10.7	2.67	7.3	8	0.03	1	1	96
+7	2	6	12000000	4610000	10.7	2.67	7.3	8	0.03	1	1	96
+8	6	8	12000000	4610000	10.7	2.67	7.3	8	0.03	1	1	96`;
 /* =========================
    Model
    ========================= */
@@ -428,7 +428,7 @@ function parseNodes(text){
 }
 
 /* =========================
-   Parse elems: elem ni nj E G Izz Iyy Jyz Ayz x3 y3 z3
+   Parse elems: elem ni nj E G Izz Iyy Jyz Ayz rho x3 y3 z3
    ========================= */
 function parseElems(text){
   const lines = text.split(/\r?\n/);
@@ -3099,6 +3099,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
