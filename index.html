@@ -1230,13 +1230,15 @@ function buildExpandedModel(nSub = 10){
 
     const chain = [iExp, ...internalIdx, jExp];
     for(let s=0; s<nSub; s++){
-      expanded.elems.push({
-        ni: chain[s], nj: chain[s+1],
-        E: pe.E, G: pe.G, Izz: pe.Izz, Iyy: pe.Iyy, Jyz: pe.Jyz, Ayz: pe.Ayz,
-        x3: pe.x3, y3: pe.y3, z3: pe.z3,
-        primaryElemId: pe.id,
-        subIndex: s+1
-      });
+expanded.elems.push({
+  ni: chain[s], nj: chain[s+1],
+  E: pe.E, G: pe.G, Izz: pe.Izz, Iyy: pe.Iyy, Jyz: pe.Jyz, Ayz: pe.Ayz,
+  rho: pe.rho,                 // ✅ ADD THIS
+  x3: pe.x3, y3: pe.y3, z3: pe.z3,
+  primaryElemId: pe.id,
+  subIndex: s+1
+});
+
     }
   }
   return expanded;
@@ -1734,7 +1736,8 @@ function elementEndForcesLocal(expanded, e, U){
   const n1 = expanded.nodes[e.ni];
   const n2 = expanded.nodes[e.nj];
   const dx = n2.x-n1.x, dy = n2.y-n1.y, dz = n2.z-n1.z;
-  const L = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  const L  = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  if(!(L > 0)) throw new Error("Zero-length element in elementEndForcesLocal().");
 
   // Global element displacement vector (12)
   const uG = new Float64Array(12);
@@ -1743,33 +1746,83 @@ function elementEndForcesLocal(expanded, e, U){
     uG[i+6] = U[6*e.nj + i];
   }
 
-  // Transformation matrix (global -> local)
+  // Transformation matrix (GLOBAL -> LOCAL for displacements)
   const T = build3DTransformationMatrix(n1, n2, e.x3, e.y3, e.z3);
 
   // ✅ Correct: uL = T * uG   (NOT T^T * uG)
   const uL = new Float64Array(12);
   for(let i=0; i<12; i++){
     let sum = 0;
-    for(let j=0; j<12; j++){
-      sum += T[i][j] * uG[j];
-    }
+    for(let j=0; j<12; j++) sum += T[i][j] * uG[j];
     uL[i] = sum;
   }
 
-  // Local end forces
+  // Local end forces from stiffness
   const kL = elementLocalStiffness3D(e.E, e.G, e.Ayz, e.Izz, e.Iyy, e.Jyz, L);
   const fL = new Float64Array(12);
   for(let i=0; i<12; i++){
     let sum = 0;
-    for(let j=0; j<12; j++){
-      sum += kL[i][j] * uL[j];
-    }
+    for(let j=0; j<12; j++) sum += kL[i][j] * uL[j];
     fL[i] = sum;
+  }
+
+  // =========================================================
+  // SUBTRACT FIXED-END VECTOR for SELF-WEIGHT (UDL)
+  // So recovered end actions correspond to internal end forces:
+  //   f_internal = k*u - f_fixedEnd
+  // This must match the same UDL assumptions used in assembly.
+  //
+  // Here:
+  //   w = rho * A * g  (force/length magnitude)
+  //   gravity acts in GLOBAL -Z
+  //   vectors transform GLOBAL->LOCAL as vL = R * vG (R from T block 0)
+  // =========================================================
+  const rho = (e.rho || 0);
+  if(rho !== 0){
+    const g = getGravity();
+    const w = rho * e.Ayz * g;         // force/length magnitude
+    if(Math.abs(w) > 0){
+      const wg = {x:0, y:0, z:-w};     // global gravity direction
+
+      // R is the 3x3 in block 0 of T; since uL = R*uG, vectors use same mapping
+      const R = [
+        [T[0][0], T[0][1], T[0][2]],
+        [T[1][0], T[1][1], T[1][2]],
+        [T[2][0], T[2][1], T[2][2]]
+      ];
+
+      // Local components of distributed load
+      const wLx = R[0][0]*wg.x + R[0][1]*wg.y + R[0][2]*wg.z;
+      const wLy = R[1][0]*wg.x + R[1][1]*wg.y + R[1][2]*wg.z;
+      const wLz = R[2][0]*wg.x + R[2][1]*wg.y + R[2][2]*wg.z;
+
+      // Equivalent nodal load vector in LOCAL coordinates (12)
+      // Order: [Fx,Fy,Fz,Mx,My,Mz, Fx2,Fy2,Fz2,Mx2,My2,Mz2]
+      const feL = new Float64Array(12);
+
+      // Uniform axial along local x
+      feL[0] += wLx * L/2;
+      feL[6] += wLx * L/2;
+
+      // Uniform load in local y -> end shears Fy and end moments Mz
+      feL[1]  += wLy * L/2;
+      feL[5]  +=  wLy * L*L/12;
+      feL[7]  += wLy * L/2;
+      feL[11] += -wLy * L*L/12;
+
+      // Uniform load in local z -> end shears Fz and end moments My
+      feL[2]  += wLz * L/2;
+      feL[4]  += -wLz * L*L/12;
+      feL[8]  += wLz * L/2;
+      feL[10] +=  wLz * L*L/12;
+
+      // Subtract fixed-end vector
+      for(let i=0;i<12;i++) fL[i] -= feL[i];
+    }
   }
 
   return { fL, L };
 }
-
 
 function calculateElementStresses(expanded, elemIndex, U){
   // Calculate stresses at a specific point along an expanded element
@@ -2999,6 +3052,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
