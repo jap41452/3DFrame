@@ -2044,16 +2044,16 @@ function displayElementAnalysis(elemId, viewMode){
   const firstForces = calculateElementStresses(Model.lastSolution.expanded, idxFirst, Model.lastSolution.U);
   const lastForces  = calculateElementStresses(Model.lastSolution.expanded, idxLast,  Model.lastSolution.U);
 
-  // Constant internal actions from recovery (no dist loads except self-weight)
-  const N     = firstForces.forces.i.Fx;
-  const Vy_i  = firstForces.forces.i.Fy;
-  const Vz_i  = firstForces.forces.i.Fz;
-  const Mx    = firstForces.forces.i.Mx;
+  // Recovered END ACTIONS (nodal actions: element -> node) from recovery
+  const N_node_i   = firstForces.forces.i.Fx;
+  const Fy_node_i  = firstForces.forces.i.Fy;
+  const Fz_node_i  = firstForces.forces.i.Fz;
+  const Mx_node_i  = firstForces.forces.i.Mx;
 
-  const My_i  = firstForces.forces.i.My;
-  const Mz_i  = firstForces.forces.i.Mz;
-  const My_j_end = lastForces.forces.j.My;
-  const Mz_j_end = lastForces.forces.j.Mz;
+  const My_node_i  = firstForces.forces.i.My;
+  const Mz_node_i  = firstForces.forces.i.Mz;
+  const My_node_j  = lastForces.forces.j.My;
+  const Mz_node_j  = lastForces.forces.j.Mz;
 
   // Primary element length
   const ni_primary = Model.nodeById.get(elem.ni);
@@ -2107,22 +2107,35 @@ function displayElementAnalysis(elemId, viewMode){
     }
   }
 
-  // Constant stresses (baseline)
-  const sigma_axial = N / Ayz;
+  // ============================
+  // IMPORTANT FIX (nodal vs section)
+  // ============================
+  // firstForces/lastForces store NODAL actions (element -> node).
+  // Internal SECTION resultants just inside the element are the NEGATIVES
+  // of the nodal actions at that end.
+  const N0  = -N_node_i;
+  const Vy0 = -Fy_node_i;
+  const Vz0 = -Fz_node_i;
+  const My0 = -My_node_i;
+  const Mz0 = -Mz_node_i;
 
-  const tau_y = Math.abs(Vy_i) / Ayz;
-  const tau_z = Math.abs(Vz_i) / Ayz;
+  // Constant stresses (baseline) using SECTION axial force sign convention
+  // (If you want tension positive, keep as N0/A. If you want nodal sign, swap.)
+  const sigma_axial = N0 / Ayz;
+
+  // Shear/torsion "summary" (still end-based). If you want varying tau(x), compute from Vy(x),Vz(x).
+  const tau_y = Math.abs(Vy0) / Ayz;
+  const tau_z = Math.abs(Vz0) / Ayz;
   const tau_shear = Math.sqrt(tau_y*tau_y + tau_z*tau_z);
 
   const c_torsion = Math.sqrt(Math.max(Iyy, Izz) / Ayz);
-  const tau_torsion = Math.abs(Mx) * c_torsion / Jyz;
+  const tau_torsion = Math.abs(Mx_node_i) * c_torsion / Jyz;
 
-  // Build a profile along the member:
-  //   Vy(x) = Vy_i - wLy*x
-  //   Vz(x) = Vz_i - wLz*x
-  //   Mz(x) = Mz_i + Vy_i*x - 0.5*wLy*x^2
-  //   My(x) = My_i + Vz_i*x - 0.5*wLz*x^2
-  // If wLy=wLz=0 => constant shear and linear moments.
+  // Build a profile along the member (SECTION resultants):
+  //   Vy(x) = Vy0 + wLy*x
+  //   Vz(x) = Vz0 + wLz*x
+  //   Mz(x) = Mz0 + Vy0*x + 0.5*wLy*x^2
+  //   My(x) = My0 + Vz0*x + 0.5*wLz*x^2
   const numPoints = 41;
   const stressProfile = [];
 
@@ -2130,11 +2143,11 @@ function displayElementAnalysis(elemId, viewMode){
     const xi = i / (numPoints - 1);
     const x  = xi * L_primary;
 
-    const Vy_x = Vy_i - wLy * x;
-    const Vz_x = Vz_i - wLz * x;
+    const Vy_x = Vy0 + wLy * x;
+    const Vz_x = Vz0 + wLz * x;
 
-    const Mz_x = Mz_i + Vy_i * x - 0.5 * wLy * x * x;
-    const My_x = My_i + Vz_i * x - 0.5 * wLz * x * x;
+    const Mz_x = Mz0 + Vy0 * x + 0.5 * wLy * x * x;
+    const My_x = My0 + Vz0 * x + 0.5 * wLz * x * x;
 
     const sigma_bend_My = Math.abs(My_x) * c_z / Izz;
     const sigma_bend_Mz = Math.abs(Mz_x) * c_y / Iyy;
@@ -2154,8 +2167,8 @@ function displayElementAnalysis(elemId, viewMode){
       sigma_bend_Mz,
       sigma_max,
       sigma_min,
-      tau_shear,     // constant (end-force based). If you want tau(x), compute from Vy_x,Vz_x.
-      tau_torsion    // constant
+      tau_shear,
+      tau_torsion
     });
   }
 
@@ -2177,7 +2190,8 @@ function displayElementAnalysis(elemId, viewMode){
   else if(mode === 'moment'){
     html += buildMomentDiagramsCorrected(stressProfile, elem);
     html += '<div style="margin-top:8px; font-size:11px;">';
-    html += `<div class="stressValue">End moments (from recovery): My_i=${My_i.toFixed(3)}, My_j=${My_j_end.toFixed(3)} | Mz_i=${Mz_i.toFixed(3)}, Mz_j=${Mz_j_end.toFixed(3)}</div>`;
+    html += `<div class="stressValue">End moments (from recovery, nodal actions): My_i=${My_node_i.toFixed(3)}, My_j=${My_node_j.toFixed(3)} | Mz_i=${Mz_node_i.toFixed(3)}, Mz_j=${Mz_node_j.toFixed(3)}</div>`;
+    html += `<div class="stressValue">End moments (section, expected): My(0+)=${My0.toFixed(3)}, My(L-)=${(-My_node_j).toFixed(3)} | Mz(0+)=${Mz0.toFixed(3)}, Mz(L-)=${(-Mz_node_j).toFixed(3)}</div>`;
     html += '</div>';
   }
   else if(mode === 'shear'){
@@ -2202,7 +2216,7 @@ function displayElementAnalysis(elemId, viewMode){
 
     html += '<div style="margin-bottom:10px; font-size:11px;">';
     html += '<div class="stressLabel">Shear Force Diagrams (Local Coordinates)</div>';
-    html += '<div class="stressValue">Vy(x)=Vy_i−wy·x, Vz(x)=Vz_i−wz·x</div>';
+    html += '<div class="stressValue">Vy(x)=Vy(0+)+wy·x, Vz(x)=Vz(0+)+wz·x</div>';
     html += '</div>';
 
     html += `<svg width="${width}" height="${height}" style="border:1px solid var(--line); background:#fff;">`;
@@ -2249,7 +2263,6 @@ function displayElementAnalysis(elemId, viewMode){
 
   el.stressContent.innerHTML = html;
 }
-
 
 function buildStressTableCorrected(stressProfile){
   // Table with corrected constant/varying values
@@ -3052,6 +3065,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
