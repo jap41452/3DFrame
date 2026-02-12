@@ -60,6 +60,18 @@
   <div id="ui">
     <h3>Frame Definition</h3>
 
+<div class="btnRow" style="margin-bottom:8px;">
+  <button id="btnExportJSON" class="mini">Export JSON</button>
+  <button id="btnImportJSON" class="mini">Import JSON</button>
+</div>
+
+<button id="btnExportCSV" class="mini" style="margin-bottom:10px;" disabled>
+  Export Results CSV 
+</button>
+
+<input id="fileImportJSON" type="file" accept=".json" style="display:none" />
+
+
     <div class="sectionTitle">Nodes</div>
     <button id="btnImportNodes">Load Nodes File</button>
     <input id="fileNodes" type="file" accept=".txt,.tsv,.csv" style="display:none" />
@@ -254,8 +266,16 @@ const el = {
   defScaleMaxInput: document.getElementById('defScaleMaxInput'),
   btnSetMaxScale: document.getElementById('btnSetMaxScale'),
   stressContent: document.getElementById('stressContent'),
-  stressViewSelector: document.getElementById('stressViewSelector')
+  stressViewSelector: document.getElementById('stressViewSelector'),
+
+  btnExportJSON: document.getElementById('btnExportJSON'),
+  btnImportJSON: document.getElementById('btnImportJSON'),
+  btnExportCSV:  document.getElementById('btnExportCSV'),
+  fileImportJSON: document.getElementById('fileImportJSON'),
 };
+
+
+
 const ctx = el.canvas.getContext('2d');
 
 /* =========================
@@ -309,6 +329,80 @@ function renderSummary(){
     el.summary.appendChild(badge(`Expanded: ${exN} nodes, ${exE} segs`));
   }
 }
+
+function pad2(n){ return String(n).padStart(2,'0'); }
+function timestampForFilename(d=new Date()){
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+}
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 250);
+}
+
+function buildExportState(){
+  // Keep it explicit + stable. This is what your Import expects.
+  return {
+    schema: "xl4sim.frame3d.json.v1",
+    exportedAtISO: new Date().toISOString(),
+    unitSystem: UNIT_SYSTEM,          // "imperial" or "metric"
+    defScaleMax: Number(el.defScale.max || 200),
+    nodesText: el.taNodes.value || "",
+    elemsText: el.taElems.value || "",
+    // Optional: camera/view persistence (nice UX)
+    view: {
+      cam: {...View.cam}
+    }
+  };
+}
+
+function applyImportedState(obj){
+  if(!obj || typeof obj !== 'object') throw new Error("Invalid JSON object.");
+  if(obj.schema !== "xl4sim.frame3d.json.v1"){
+    // Allow older / unknown schema but warn
+    logLine("WARN: JSON schema mismatch. Attempting to import anyway.", "log-warn");
+  }
+
+  if(typeof obj.unitSystem === "string"){
+    UNIT_SYSTEM = obj.unitSystem;
+  }
+
+  if(Number.isFinite(obj.defScaleMax) && obj.defScaleMax > 0){
+    el.defScale.max = obj.defScaleMax;
+    el.defScaleMax.textContent = obj.defScaleMax;
+    el.defScaleMaxInput.value = obj.defScaleMax;
+  }
+
+  if(typeof obj.nodesText === "string") el.taNodes.value = obj.nodesText;
+  if(typeof obj.elemsText === "string") el.taElems.value = obj.elemsText;
+
+  // Sync and redraw
+  syncFromTextareas({nodes:true, elems:true, announce:true});
+
+  // Restore camera if present
+  if(obj.view?.cam){
+    View.cam = {...View.cam, ...obj.view.cam};
+  }
+
+  if(!crossValidate()){
+    setStatus("Fix input");
+    return;
+  }
+
+  View.isInteractive = true;
+  fitView3D(Model.nodes);
+  Model.isDrawn = true;
+  drawPrimary();
+  setStatus("Interactive");
+  logLine("OK: JSON imported and model restored.", "log-ok");
+}
+
 
 /* =========================
    Parsing utilities
@@ -505,7 +599,10 @@ function invalidateSolutionAndDefScale(){
   el.defScaleInput.value = 0;
   el.defScale.disabled = true;
   el.defScaleInput.disabled = true;
+  el.btnExportCSV.disabled = true;
 }
+
+
 function installNodes(nodes){
   Model.nodes = nodes;
   Model.nodeById = new Map(nodes.map(n=>[n.id,n]));
@@ -1999,6 +2096,152 @@ const {fL} = elementEndForcesLocal(Model.lastSolution.expanded, e, Model.lastSol
     }
   };
 }
+function computePrimarySegmentResultRow(elemId){
+  if(!Model.lastSolution) throw new Error("No solution. Run Static Solve first.");
+
+  const elem = Model.elemById.get(elemId);
+  if(!elem) throw new Error(`Element ${elemId} not found`);
+
+  // Gather subsegments in order
+  const subElems = Model.lastSolution.expanded.elems.filter(e => e.primaryElemId === elemId);
+  if(subElems.length === 0) throw new Error(`No expanded subsegments for element ${elemId}`);
+
+  const firstSub = subElems[0];
+  const lastSub  = subElems[subElems.length - 1];
+
+  const idxFirst = Model.lastSolution.expanded.elems.indexOf(firstSub);
+  const idxLast  = Model.lastSolution.expanded.elems.indexOf(lastSub);
+
+  const first = calculateElementStresses(Model.lastSolution.expanded, idxFirst, Model.lastSolution.U);
+  const last  = calculateElementStresses(Model.lastSolution.expanded, idxLast,  Model.lastSolution.U);
+
+  const ni = Model.nodeById.get(elem.ni);
+  const nj = Model.nodeById.get(elem.nj);
+  const L  = Math.hypot(nj.x-ni.x, nj.y-ni.y, nj.z-ni.z);
+
+  // End forces/moments (local)
+  const N   = first.forces.i.Fx;
+  const Vy0 = first.forces.i.Fy;
+  const Vz0 = first.forces.i.Fz;
+  const Mx0 = first.forces.i.Mx;
+  const My_i = first.forces.i.My;
+  const Mz_i = first.forces.i.Mz;
+  const My_j = last.forces.j.My;
+  const Mz_j = last.forces.j.Mz;
+
+  // Self-weight (local components) for reporting (your Option 2 uses these)
+  let wLx=0, wLy=0, wLz=0, w=0;
+  if((elem.rho || 0) !== 0){
+    const g = getGravity();
+    w = (elem.rho || 0) * elem.Ayz * g; // force/length, global -Z
+    const wg = {x:0,y:0,z:-w};
+    const T = build3DTransformationMatrix(ni, nj, elem.x3, elem.y3, elem.z3);
+    const R = [
+      [T[0][0],T[0][1],T[0][2]],
+      [T[1][0],T[1][1],T[1][2]],
+      [T[2][0],T[2][1],T[2][2]]
+    ];
+    wLx = R[0][0]*wg.x + R[0][1]*wg.y + R[0][2]*wg.z;
+    wLy = R[1][0]*wg.x + R[1][1]*wg.y + R[1][2]*wg.z;
+    wLz = R[2][0]*wg.x + R[2][1]*wg.y + R[2][2]*wg.z;
+  }
+
+  // Combined stress envelope from your stressProfile logic (Option 2 curvature)
+  // Use a moderate sampling for CSV summary
+  const c_y = first.sectionProperties.c_y;
+  const c_z = first.sectionProperties.c_z;
+
+  const Ayz = elem.Ayz, Izz = elem.Izz, Iyy = elem.Iyy;
+  const sigma_axial = N / Ayz;
+
+  let sigmaMax = -Infinity;
+  let sigmaMin = +Infinity;
+
+  const npts = 41;
+  for(let i=0;i<npts;i++){
+    const x = (i/(npts-1)) * L;
+
+    const Mz_x = Mz_i + Vy0*x - 0.5*wLy*x*x;
+    const My_x = My_i + Vz0*x - 0.5*wLz*x*x;
+
+    const sigma_bend_My = Math.abs(My_x) * c_z / Izz;
+    const sigma_bend_Mz = Math.abs(Mz_x) * c_y / Iyy;
+
+    const smax = sigma_axial + sigma_bend_My + sigma_bend_Mz;
+    const smin = sigma_axial - sigma_bend_My - sigma_bend_Mz;
+
+    if(smax > sigmaMax) sigmaMax = smax;
+    if(smin < sigmaMin) sigmaMin = smin;
+  }
+
+  // Direction cosines (for traceability)
+  const basis = localAxesFromElem(ni, nj, elem);
+  const xhat = basis.xhat || {x:NaN,y:NaN,z:NaN};
+  const yhat = basis.yhat || {x:NaN,y:NaN,z:NaN};
+  const zhat = basis.zhat || {x:NaN,y:NaN,z:NaN};
+
+  return {
+    elemId,
+    ni: elem.ni,
+    nj: elem.nj,
+    L,
+    E: elem.E, G: elem.G,
+    Ayz: elem.Ayz, Izz: elem.Izz, Iyy: elem.Iyy, Jyz: elem.Jyz,
+    rho: (elem.rho||0),
+    w, wLx, wLy, wLz,
+    N, Vy0, Vz0, Mx0,
+    My_i, My_j, Mz_i, Mz_j,
+    sigmaMax, sigmaMin,
+    xhat, yhat, zhat
+  };
+}
+
+function exportResultsCSV(){
+  if(!Model.lastSolution) throw new Error("No solution. Run Static Solve first.");
+
+  const now = new Date();
+  const tsISO = now.toISOString();
+
+  const headers = [
+    "timestampISO","unitSystem",
+    "elem","ni","nj","L",
+    "E","G","Ayz","Izz","Iyy","Jyz","rho",
+    "w_globalMinusZ","wLx","wLy","wLz",
+    "N_Fx","Vy_i","Vz_i","Mx_i",
+    "My_i","My_j","Mz_i","Mz_j",
+    "sigmaMax_env","sigmaMin_env",
+    "xhat_x","xhat_y","xhat_z",
+    "yhat_x","yhat_y","yhat_z",
+    "zhat_x","zhat_y","zhat_z"
+  ];
+
+  const lines = [];
+  lines.push(headers.join(","));
+
+  for(const e of Model.elems){
+    const r = computePrimarySegmentResultRow(e.id);
+
+    const row = [
+      tsISO, UNIT_SYSTEM,
+      r.elemId, r.ni, r.nj, r.L,
+      r.E, r.G, r.Ayz, r.Izz, r.Iyy, r.Jyz, r.rho,
+      r.w, r.wLx, r.wLy, r.wLz,
+      r.N, r.Vy0, r.Vz0, r.Mx0,
+      r.My_i, r.My_j, r.Mz_i, r.Mz_j,
+      r.sigmaMax, r.sigmaMin,
+      r.xhat.x, r.xhat.y, r.xhat.z,
+      r.yhat.x, r.yhat.y, r.yhat.z,
+      r.zhat.x, r.zhat.y, r.zhat.z
+    ].map(v => (Number.isFinite(v) ? v : (typeof v === "string" ? `"${v.replaceAll('"','""')}"` : v)));
+
+    lines.push(row.join(","));
+  }
+
+  const csv = lines.join("\n");
+  const blob = new Blob([csv], {type:"text/csv"});
+  downloadBlob(blob, `frame3d_results_${timestampForFilename(now)}.csv`);
+}
+
 
 function displayElementAnalysis(elemId, viewMode){
   // Display analysis for a primary segment with selectable view modes
@@ -2712,7 +2955,12 @@ for(let d=0; d<sol.meta.ndof && shown<8; d++){
 
     
 
+
 Model.lastSolution = { expanded, U: sol.U, F: sol.F, K: sol.K, R: sol.R, meta: sol.meta, disp, stress };
+
+// enable CSV export now that we have results
+el.btnExportCSV.disabled = false;
+
 
 // after: Model.lastSolution = { expanded, U: sol.U, ... };
 
@@ -2776,6 +3024,45 @@ el.stressViewSelector.addEventListener('change', ()=>{
     displayElementAnalysis(View.selectedSegmentForAnalysis);
   }
 });
+
+el.btnExportJSON.addEventListener('click', ()=>{
+  try{
+    const obj = buildExportState();
+    const blob = new Blob([JSON.stringify(obj, null, 2)], {type:"application/json"});
+    downloadBlob(blob, `frame3d_model_${timestampForFilename()}.json`);
+    logLine("OK: Exported JSON.", "log-ok");
+  }catch(err){
+    logLine(`ERROR exporting JSON: ${err.message}`, "log-err");
+  }
+});
+
+el.btnImportJSON.addEventListener('click', ()=> el.fileImportJSON.click());
+
+el.fileImportJSON.addEventListener('change', async ()=>{
+  const f = el.fileImportJSON.files?.[0];
+  if(!f) return;
+  try{
+    const text = await f.text();
+    const obj = JSON.parse(text);
+    logClear(); setStatus("Importing JSON...");
+    applyImportedState(obj);
+  }catch(err){
+    logLine(`ERROR importing JSON: ${err.message}`, "log-err");
+    setStatus("Import failed");
+  }finally{
+    el.fileImportJSON.value = "";
+  }
+});
+
+el.btnExportCSV.addEventListener('click', ()=>{
+  try{
+    exportResultsCSV();
+    logLine("OK: Exported results CSV.", "log-ok");
+  }catch(err){
+    logLine(`ERROR exporting CSV: ${err.message}`, "log-err");
+  }
+});
+
 
 /* =========================
    3D Camera Controls
@@ -3089,7 +3376,8 @@ function init(){
   logClear();
   try{
     syncFromTextareas({nodes:true, elems:true, announce:false});
-    logLine("Loaded defaults into model. Edit text and click Solve; changes take effect immediately.", "log-ok");
+    el.btnExportCSV.disabled = true;
+logLine("Loaded defaults into model. Edit text and click Solve; changes take effect immediately.", "log-ok");
   }catch(err){
     logLine(`ERROR loading defaults: ${err.message}`, "log-err");
   }
@@ -3099,6 +3387,7 @@ init();
 </script>
 </body>
 </html>
+
 
 
 
